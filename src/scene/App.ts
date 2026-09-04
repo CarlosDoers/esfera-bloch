@@ -1,0 +1,240 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
+import { QUBIT_COUNT, type Territory, type SubItem } from '../menu';
+import type { Overlay } from '../ui/Overlay';
+import { BlochSphere } from './BlochSphere';
+import { easeTo } from './helpers';
+import { QubitLattice, type HitInfo } from './QubitLattice';
+import { Floor } from './Floor';
+import { Starfield } from './Starfield';
+
+/** Altura del centro de la esfera sobre el suelo. */
+export const SPHERE_Y = 1.6;
+
+export class App {
+  /** Se invoca al pulsar una subsección (cúbit 3D o botón del panel). */
+  onNavigate: (item: Territory, sub: SubItem) => void = () => {};
+
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly labelRenderer: CSS2DRenderer;
+  private readonly scene = new THREE.Scene();
+  private readonly camera: THREE.PerspectiveCamera;
+  private readonly controls: OrbitControls;
+  private readonly composer: EffectComposer;
+  private readonly timer = new THREE.Timer();
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly pointer = new THREE.Vector2(-2, -2);
+  private readonly downPos = new THREE.Vector2();
+  private readonly center = new THREE.Vector3(0, SPHERE_Y, 0);
+  private readonly camWorld = new THREE.Vector3();
+  private readonly tmpA = new THREE.Vector3();
+  private readonly tmpB = new THREE.Vector3();
+  private pointerInside = false;
+  private focusYaw: number | null = null;
+  private lastCount = -1;
+
+  private readonly sphere: BlochSphere;
+  private readonly lattice: QubitLattice;
+  private readonly stars: Starfield;
+  private readonly floor = new Floor();
+
+  /** 0 = vista general, 1 = una sección enfocada (el resto se atenúa). */
+  private focus = 0;
+
+  constructor(
+    private readonly container: HTMLElement,
+    private readonly items: Territory[],
+    private readonly overlay: Overlay,
+  ) {
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+
+    // --- renderers ---
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setSize(w, h);
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
+    container.appendChild(this.renderer.domElement);
+
+    this.labelRenderer = new CSS2DRenderer();
+    this.labelRenderer.setSize(w, h);
+    Object.assign(this.labelRenderer.domElement.style, { position: 'absolute', top: '0', left: '0', pointerEvents: 'none' });
+    container.appendChild(this.labelRenderer.domElement);
+
+    // --- escena / cámara ---
+    this.scene.background = new THREE.Color(0x02040a);
+    this.scene.fog = new THREE.FogExp2(0x02040a, 0.028);
+
+    this.camera = new THREE.PerspectiveCamera(42, w / h, 0.1, 200);
+    this.camera.position.set(3.9, 3.0, -3.9);
+
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.target.copy(this.center);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.06;
+    this.controls.enablePan = false;
+    this.controls.minDistance = 3.2;
+    this.controls.maxDistance = 11;
+    this.controls.minPolarAngle = 0.35;
+    this.controls.maxPolarAngle = Math.PI / 2 - 0.06;
+    this.controls.autoRotate = true;
+    this.controls.autoRotateSpeed = 0.45;
+
+    // --- luces (solo afectan al cristal de la esfera) ---
+    this.scene.add(new THREE.AmbientLight(0x6688aa, 0.6));
+    const cyan = new THREE.PointLight(0x5fe8ff, 6, 20, 2);
+    cyan.position.copy(this.center);
+    this.scene.add(cyan);
+
+    // --- objetos ---
+    this.sphere = new BlochSphere();
+    this.sphere.group.position.copy(this.center);
+    this.lattice = new QubitLattice(items, QUBIT_COUNT);
+    this.sphere.group.add(this.lattice.group); // gira junto con la esfera
+    this.stars = new Starfield();
+    this.scene.add(this.sphere.group, this.floor.group, this.stars.points);
+
+    // --- postprocesado ---
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(w, h), 0.9, 0.6, 0.18));
+    this.composer.addPass(new OutputPass());
+
+    this.bindEvents();
+    this.renderer.setAnimationLoop(() => this.tick());
+  }
+
+  select(id: string | null): void {
+    this.lattice.select(id);
+    const item = this.items.find((i) => i.id === id);
+    if (item) {
+      this.overlay.showItem(item);
+      this.focusOn(item.id);
+    } else {
+      this.overlay.hide();
+    }
+    this.controls.autoRotate = !item;
+  }
+
+  /** Gira la esfera para que la sección seleccionada quede frente a la cámara. */
+  private focusOn(id: string): void {
+    const p = this.lattice.hubPosition(id);
+    if (!p) return;
+    const camAz = Math.atan2(this.camera.position.x, this.camera.position.z);
+    const hubAz = Math.atan2(p.x, p.z);
+    this.focusYaw = camAz - hubAz;
+  }
+
+  // ---------- bucle ----------
+
+  private tick(): void {
+    this.timer.update();
+    const dt = Math.min(this.timer.getDelta(), 0.05);
+
+    if (this.focusYaw !== null) {
+      const cur = this.sphere.group.rotation.y;
+      const delta = Math.atan2(Math.sin(this.focusYaw - cur), Math.cos(this.focusYaw - cur));
+      this.sphere.group.rotation.y = cur + delta * Math.min(1, dt * 3.5);
+      if (Math.abs(delta) < 0.003) this.focusYaw = null;
+    }
+
+    this.focus = easeTo(this.focus, this.lattice.selected ? 1 : 0, dt, 4);
+
+    this.camera.getWorldPosition(this.camWorld);
+    this.sphere.update(dt, this.focus);
+    this.lattice.update(dt, this.camWorld, this.focus);
+    this.stars.update(dt, this.focus);
+    this.floor.setFocus(this.focus);
+
+    const hit = this.pointerInside ? this.pick() : null;
+    this.lattice.setHovered(hit);
+    this.container.classList.toggle('is-hover', hit !== null && hit.kind !== 'qubit');
+
+    if (this.lattice.booted !== this.lastCount) {
+      this.lastCount = this.lattice.booted;
+      this.overlay.setQubitCount(this.lastCount);
+    }
+
+    this.controls.update();
+    this.composer.render();
+    this.labelRenderer.render(this.scene, this.camera);
+  }
+
+  /** Primer impacto que mire hacia la cámara (ignora la cara oculta de la esfera). */
+  private pick(): HitInfo | null {
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    for (const hit of this.raycaster.intersectObjects(this.lattice.hitTargets(), false)) {
+      const info = this.lattice.resolveHit(hit);
+      if (!info) continue;
+      const normal = this.tmpA.copy(hit.point).sub(this.center).normalize();
+      const toCam = this.tmpB.copy(this.camera.position).sub(hit.point).normalize();
+      if (normal.dot(toCam) < 0.05) continue;
+      return info;
+    }
+    return null;
+  }
+
+  // ---------- eventos ----------
+
+  private bindEvents(): void {
+    const el = this.renderer.domElement;
+
+    el.addEventListener('pointermove', (e) => {
+      this.pointerInside = true;
+      this.updatePointer(e);
+    });
+    el.addEventListener('pointerleave', () => {
+      this.pointerInside = false;
+    });
+    el.addEventListener('pointerdown', (e) => this.downPos.set(e.clientX, e.clientY));
+    el.addEventListener('pointerup', (e) => {
+      if (this.downPos.distanceTo(new THREE.Vector2(e.clientX, e.clientY)) > 6) return; // era un arrastre
+      this.pointerInside = true;
+      this.updatePointer(e);
+      this.handleClick(this.pick());
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.select(null);
+    });
+    window.addEventListener('resize', () => this.resize());
+
+    this.overlay.onClose = () => this.select(null);
+    this.overlay.onSubClick = (item, sub) => this.onNavigate(item, sub);
+  }
+
+  private handleClick(hit: HitInfo | null): void {
+    if (!hit || hit.kind === 'qubit') {
+      if (this.lattice.selected) this.select(null);
+      return;
+    }
+    if (hit.kind === 'item') {
+      this.select(hit.itemId);
+      return;
+    }
+    const item = this.items.find((i) => i.id === hit.itemId);
+    const sub = item?.items.find((s) => s.id === hit.subId);
+    if (item && sub) this.onNavigate(item, sub);
+  }
+
+  private updatePointer(e: PointerEvent): void {
+    const r = this.renderer.domElement.getBoundingClientRect();
+    this.pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  }
+
+  private resize(): void {
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(w, h);
+    this.composer.setSize(w, h);
+    this.labelRenderer.setSize(w, h);
+  }
+}
