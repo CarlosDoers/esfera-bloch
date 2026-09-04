@@ -90,22 +90,15 @@ export class BlochSphere {
     return rimMat;
   }
 
+  /**
+   * Solo meridianos: los paralelos los pone ahora la propia retícula del chip, que se
+   * tiende en bandas de latitud. 8 círculos máximos = 16 meridianos, uno por cada
+   * columna de cúbits, así que las columnas caen exactamente sobre la rejilla.
+   */
   private buildGrid(): void {
     const pts: number[] = [];
-    // Paralelos
-    for (let lat = -75; lat <= 75; lat += 15) {
-      const phi = THREE.MathUtils.degToRad(lat);
-      const r = Math.cos(phi);
-      const y = Math.sin(phi);
-      const n = Math.max(28, Math.round(150 * r));
-      for (let i = 0; i < n; i++) {
-        const a = (i / n) * Math.PI * 2;
-        pts.push(r * Math.cos(a), y, r * Math.sin(a));
-      }
-    }
-    // Meridianos (6 círculos máximos = 12 meridianos)
-    for (let m = 0; m < 6; m++) {
-      const yaw = (m / 6) * Math.PI;
+    for (let m = 0; m < 8; m++) {
+      const yaw = (m / 8) * Math.PI;
       const n = 170;
       for (let i = 0; i < n; i++) {
         const a = (i / n) * Math.PI * 2;
@@ -120,7 +113,7 @@ export class BlochSphere {
         size: 0.015,
         sizeAttenuation: true,
         transparent: true,
-        opacity: 0.45,
+        opacity: 0.3,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       }),

@@ -2,6 +2,53 @@ import * as THREE from 'three';
 import { Reflector } from 'three/addons/objects/Reflector.js';
 import { radialTexture } from './helpers';
 
+/** Variante suave del shader del Reflector: reflejo atenuado y desvanecido con la distancia. */
+const softMirrorShader = {
+  name: 'SoftMirror',
+  uniforms: {
+    color: { value: null as THREE.Color | null },
+    tDiffuse: { value: null as THREE.Texture | null },
+    textureMatrix: { value: null as THREE.Matrix4 | null },
+    uStrength: { value: 0.24 },
+    uFade: { value: 5.0 },
+    ...THREE.UniformsLib.fog,
+  },
+  vertexShader: /* glsl */ `
+    uniform mat4 textureMatrix;
+    varying vec4 vUv;
+    varying vec3 vWorld;
+    #include <common>
+    #include <fog_pars_vertex>
+    #include <logdepthbuf_pars_vertex>
+    void main() {
+      vUv = textureMatrix * vec4(position, 1.0);
+      vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
+      vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * mvPosition;
+      #include <fog_vertex>
+      #include <logdepthbuf_vertex>
+    }`,
+  fragmentShader: /* glsl */ `
+    uniform vec3 color;
+    uniform sampler2D tDiffuse;
+    uniform float uStrength;
+    uniform float uFade;
+    varying vec4 vUv;
+    varying vec3 vWorld;
+    #include <fog_pars_fragment>
+    #include <logdepthbuf_pars_fragment>
+    void main() {
+      #include <logdepthbuf_fragment>
+      vec4 base = texture2DProj(tDiffuse, vUv);
+      float d = length(vWorld.xz);
+      float fade = exp(-(d * d) / (uFade * uFade));
+      gl_FragColor = vec4(color + base.rgb * uStrength * fade, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+      #include <fog_fragment>
+    }`,
+};
+
 /** Suelo: espejo oscuro + rejilla de baldosas + charco de luz bajo la esfera. */
 export class Floor {
   readonly group = new THREE.Group();
@@ -14,8 +61,10 @@ export class Floor {
       clipBias: 0.003,
       textureWidth: 1024,
       textureHeight: 1024,
-      color: 0x101318,
+      color: 0x05080f,
+      shader: softMirrorShader,
     });
+    (mirror.material as THREE.ShaderMaterial).fog = true;
     mirror.rotation.x = -Math.PI / 2;
 
     const grid = new THREE.Mesh(
@@ -45,7 +94,7 @@ export class Floor {
             float line = 1.0 - min(min(g.x, g.y), 1.0);
             float d = length(vWorld.xz);
             float fade = exp(-(d * d) / (uFade * uFade));
-            gl_FragColor = vec4(uColor, line * fade * 0.38 * uDim);
+            gl_FragColor = vec4(uColor, line * fade * 0.26 * uDim);
           }`,
         transparent: true,
         depthWrite: false,

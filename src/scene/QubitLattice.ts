@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import type { Territory, SubItem } from '../menu';
 import { easeTo, glowSprite, makeLabel } from './helpers';
+import { bfsOrder, COLS, heavyHex, ROWS, type Topology } from './HeavyHex';
 
 export type HitInfo =
   | { kind: 'item'; itemId: string }
@@ -13,15 +14,18 @@ const BASE_SIZE = 0.016;
 const HUB_SIZE = 0.05;
 const SUB_SIZE = 0.046;
 const SUB_LIFT = 0.45; // cuánto se despegan las subsecciones (fracción del radio)
-const SUB_SPREAD = 0.7; // cuánto se separan del cúbit de sección al despegarse
+const SUB_ANGLE = 0.58; // separación angular respecto al cúbit de la sección (rad)
+const SUB_ARC_STEP = 0.8; // apertura de la corona por subsección (rad)
+const SUB_ARC_MAX = 2.4; // apertura máxima de la corona (rad)
 const BOOT_RATE = 60; // cúbits por segundo durante el arranque
-const NEIGHBOURS = 3; // enlaces por cúbit (mapa de acoplamiento)
+const POLE_GAP = 0.42; // radianes libres en cada polo, para |0⟩ y |1⟩
 const REST_DIM = 0.16; // intensidad que conserva lo no seleccionado
 const BASE_COLOR = new THREE.Color(0x8ff0ff);
 const UP = new THREE.Vector3(0, 1, 0);
 const FORWARD = new THREE.Vector3(0, 0, 1);
 const LABEL_DROP = new THREE.Vector3(0, -0.14, 0);
-const SUB_LABEL_DROP = new THREE.Vector3(0, -0.1, 0);
+const SUB_LABEL_BELOW = -0.12; // separacion vertical de la etiqueta bajo su cubit
+const SUB_LABEL_ABOVE = 0.15; // ...y por encima, alternando para que no se pisen
 
 interface Qubit {
   pos: THREE.Vector3; // hueco en la esfera
@@ -40,8 +44,6 @@ interface SubNode {
   ring: THREE.Mesh;
   ringMat: THREE.MeshBasicMaterial;
   label: CSS2DObject;
-  link: THREE.Mesh; // sección → subsección
-  tether: THREE.Mesh; // hueco original → subsección despegada
   lifted: THREE.Vector3;
 }
 
@@ -60,17 +62,21 @@ interface Hub {
 }
 
 const invisible = () => new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
-const linkGeometry = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true);
 
 /**
- * Los 156 cúbits repartidos sobre la esfera (espiral de Fibonacci) y enlazados
- * con sus vecinos. Las secciones del menú son cúbits destacados ("hubs");
- * al seleccionar uno, sus cúbits vecinos se despegan de la esfera hacia fuera
- * y muestran las subsecciones. Nada orbita.
+ * La retícula heavy-hex del IBM Quantum Heron —156 cúbits, 176 acopladores—
+ * envuelta sobre la esfera: cada fila de 16 cúbits es un paralelo y los 28 cúbits
+ * puente enlazan una banda con la siguiente. Los enlaces son los acopladores reales
+ * y la numeración sigue el orden de IBM, así que `Q·042` es el cúbit 42 del chip.
+ *
+ * Las secciones del menú son cúbits destacados ("hubs"); al seleccionar uno, sus
+ * cúbits **acoplados** se despegan de la esfera hacia fuera y muestran las
+ * subsecciones. Nada orbita.
  */
 export class QubitLattice {
   readonly group = new THREE.Group();
 
+  private readonly topology: Topology = heavyHex();
   private readonly qubits: Qubit[] = [];
   private readonly hubs: Hub[] = [];
   private readonly mesh: THREE.InstancedMesh;
@@ -84,8 +90,14 @@ export class QubitLattice {
   private readonly dummy = new THREE.Object3D();
   private readonly camLocal = new THREE.Vector3();
   private readonly tmp = new THREE.Vector3();
+  private readonly nrm = new THREE.Vector3();
+  private readonly tanU = new THREE.Vector3();
+  private readonly tanV = new THREE.Vector3();
+  private readonly crown = new THREE.Vector3();
 
   constructor(items: Territory[], readonly count: number) {
+    const n = this.topology.nodes.length;
+    if (n !== count) throw new Error(`La retícula tiene ${n} cúbits, se esperaban ${count}`);
     this.buildQubits();
 
     this.mesh = new THREE.InstancedMesh(
@@ -157,7 +169,7 @@ export class QubitLattice {
 
     // Todo lo que no pertenece a la sección enfocada baja de intensidad.
     const rest = 1 - (1 - REST_DIM) * focus;
-    (this.links.material as THREE.LineBasicMaterial).opacity = 0.22 * rest;
+    (this.links.material as THREE.LineBasicMaterial).opacity = 0.42 * rest;
 
     // Enlaces que ya se pueden mostrar (ordenados por índice máximo).
     const booted = this.booted;
@@ -193,18 +205,36 @@ export class QubitLattice {
       this.qubits[hub.index].targetColor.copy(hub.color).multiplyScalar(k);
       this.faceLabel(hub.label, hubPos, boot > 0.5);
 
-      for (const s of hub.subs) {
+      // Marco tangente al cúbit de la sección: `tanV` apunta hacia arriba en pantalla
+      // y `tanU` hacia la derecha. Como la esfera gira para encarar la sección, la
+      // corona de subsecciones sale siempre bien orientada hacia la cámara.
+      this.nrm.copy(hubPos).normalize();
+      this.tanV.copy(UP).addScaledVector(this.nrm, -UP.dot(this.nrm));
+      if (this.tanV.lengthSq() < 1e-6) this.tanV.copy(FORWARD); // sección justo en un polo
+      this.tanV.normalize();
+      this.tanU.crossVectors(this.tanV, this.nrm);
+
+      const n = hub.subs.length;
+      const arc = n > 1 ? Math.min(SUB_ARC_MAX, SUB_ARC_STEP * (n - 1)) : 0;
+
+      hub.subs.forEach((s, j) => {
         const q = this.qubits[s.index];
         const a = hub.active;
         q.targetScale = BASE_SIZE + (SUB_SIZE - BASE_SIZE) * a;
         q.targetColor.copy(BASE_COLOR).multiplyScalar(rest).lerp(hub.color, a);
 
-        // Se despega de la esfera: hacia fuera y alejándose del cúbit de sección.
-        s.lifted
-          .copy(q.pos)
-          .addScaledVector(this.tmp.copy(q.pos).sub(hubPos), SUB_SPREAD * a)
-          .normalize()
-          .multiplyScalar(RADIUS * (1 + SUB_LIFT * a));
+        // Sitio de destino: corona sobre el cúbit de la sección, de izquierda a derecha
+        // en el mismo orden que el panel. El cúbit viaja hasta ahí desde su hueco real.
+        // No se dibuja ninguna línea: lo que agrupa las subsecciones con su sección es
+        // el color y la cercanía.
+        const ang = n > 1 ? -arc / 2 + (j / (n - 1)) * arc : 0;
+        this.crown
+          .copy(this.nrm)
+          .multiplyScalar(Math.cos(SUB_ANGLE))
+          .addScaledVector(this.tanU, Math.sin(ang) * Math.sin(SUB_ANGLE))
+          .addScaledVector(this.tanV, Math.cos(ang) * Math.sin(SUB_ANGLE))
+          .multiplyScalar(RADIUS * (1 + SUB_LIFT));
+        s.lifted.copy(q.pos).lerp(this.crown, a);
         q.drawPos.copy(s.lifted);
 
         s.hit.position.copy(s.lifted);
@@ -216,19 +246,11 @@ export class QubitLattice {
         s.ring.visible = a > 0.02;
         s.ringMat.opacity = 0.9 * a;
 
-        const on = a > 0.02;
-        s.link.visible = on;
-        s.tether.visible = on;
-        if (on) {
-          orientLink(s.link, hubPos, s.lifted, 0.007 * a);
-          orientLink(s.tether, q.pos, s.lifted, 0.0025 * a);
-          (s.link.material as THREE.MeshBasicMaterial).opacity = a;
-          (s.tether.material as THREE.MeshBasicMaterial).opacity = 0.4 * a;
-        }
-
-        s.label.position.copy(s.lifted).add(SUB_LABEL_DROP);
+        // En una corona las etiquetas centrales quedan casi a la misma altura y se
+        // pisan entre si, asi que se alternan por encima y por debajo de su cubit.
+        s.label.position.copy(s.lifted).addScaledVector(UP, j % 2 ? SUB_LABEL_ABOVE : SUB_LABEL_BELOW);
         this.faceLabel(s.label, s.lifted, isSel && a > 0.6);
-      }
+      });
     }
 
     this.qubits.forEach((q, i) => {
@@ -258,13 +280,20 @@ export class QubitLattice {
 
   // ---------- construcción ----------
 
+  /**
+   * Envuelve la retícula plana sobre la esfera: la columna da la longitud (16 columnas
+   * = 16 meridianos, los mismos que dibuja la rejilla de la esfera) y la fila la latitud.
+   * Los cúbits puente caen a media banda. `POLE_GAP` deja los casquetes libres para los
+   * estados base. La retícula del chip es abierta, así que entre la columna 15 y la 0
+   * queda una costura sin acoplador: es así en la máquina real.
+   */
   private buildQubits(): void {
-    const golden = Math.PI * (3 - Math.sqrt(5));
-    for (let i = 0; i < this.count; i++) {
-      const y = 1 - ((i + 0.5) * 2) / this.count;
-      const r = Math.sqrt(1 - y * y);
-      const a = i * golden;
-      const pos = new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r).multiplyScalar(RADIUS);
+    for (const node of this.topology.nodes) {
+      const band = (node.row + (node.bridge ? 0.5 : 0)) / (ROWS - 1); // 0 = polo |0⟩, 1 = polo |1⟩
+      const theta = POLE_GAP + band * (Math.PI - 2 * POLE_GAP);
+      const phi = (node.col / COLS) * Math.PI * 2;
+      const r = Math.sin(theta);
+      const pos = new THREE.Vector3(r * Math.sin(phi), Math.cos(theta), r * Math.cos(phi)).multiplyScalar(RADIUS);
       this.qubits.push({
         pos,
         drawPos: pos.clone(),
@@ -277,21 +306,11 @@ export class QubitLattice {
     }
   }
 
+  /** Los 176 acopladores reales del Heron, ordenados para que aparezcan con el arranque. */
   private buildLinks(): THREE.LineSegments {
-    const pairs = new Map<string, [number, number]>();
-    this.qubits.forEach((q, i) => {
-      const near = this.qubits
-        .map((o, j) => ({ j, d: o.pos.distanceToSquared(q.pos) }))
-        .filter((e) => e.j !== i)
-        .sort((a, b) => a.d - b.d)
-        .slice(0, NEIGHBOURS);
-      for (const { j } of near) {
-        const a = Math.min(i, j);
-        const b = Math.max(i, j);
-        pairs.set(`${a}-${b}`, [a, b]);
-      }
-    });
-    const sorted = [...pairs.values()].sort((p, q) => p[1] - q[1]);
+    const sorted = this.topology.edges
+      .map(([a, b]): [number, number] => (a < b ? [a, b] : [b, a]))
+      .sort((p, q) => p[1] - q[1]);
     const arr = new Float32Array(sorted.length * 6);
     sorted.forEach(([a, b], k) => {
       this.qubits[a].pos.toArray(arr, k * 6);
@@ -301,18 +320,19 @@ export class QubitLattice {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
     geo.setDrawRange(0, 0);
-    return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x5fd4ee, transparent: true, opacity: 0.22 }));
+    return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x5fd4ee, transparent: true, opacity: 0.42 }));
   }
 
   private buildHubs(items: Territory[]): void {
     const used = new Set<number>();
 
-    // Un cúbit por sección, repartidos en azimut y alternando hemisferios.
+    // Un cúbit por sección, repartidos en azimut y alternando hemisferios. Nunca un
+    // cúbit puente: son de grado 2 y quedarían con muy pocos vecinos para las subsecciones.
     const hubIndex = items.map((_, k) => {
       const az = (k / items.length) * Math.PI * 2 + 0.6;
       const lat = k % 2 === 0 ? 0.32 : -0.2;
       this.tmp.set(Math.cos(lat) * Math.sin(az), Math.sin(lat), Math.cos(lat) * Math.cos(az)).multiplyScalar(RADIUS);
-      const idx = this.nearest(this.tmp, used);
+      const idx = this.nearest(this.tmp, used, true);
       used.add(idx);
       return idx;
     });
@@ -345,9 +365,13 @@ export class QubitLattice {
       label.position.copy(q.pos).multiplyScalar(1.2).add(LABEL_DROP); // hacia fuera y un poco por debajo
       this.group.add(group, label);
 
-      // Subsecciones: los cúbits vecinos más cercanos que queden libres.
-      const subs = item.items.map((sub) => {
-        const idx = this.nearest(q.pos, used);
+      // Subsecciones: los cúbits acoplados al de la sección, por cercanía en el mapa
+      // (saltos por los acopladores reales, no distancia en línea recta).
+      const subs = bfsOrder(this.topology, index)
+        .filter((i) => !used.has(i))
+        .slice(0, item.items.length)
+        .map((idx, k2) => {
+        const sub = item.items[k2];
         used.add(idx);
         const shit = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), invisible());
         shit.visible = false;
@@ -357,21 +381,20 @@ export class QubitLattice {
         sring.visible = false;
         const slabel = makeLabel(sub.label, 'sub-label', item.color);
         slabel.visible = false;
-        const link = makeLink(color);
-        const tether = makeLink(color);
-        this.group.add(shit, sring, slabel, link, tether);
-        return { sub, index: idx, hit: shit, ring: sring, ringMat, label: slabel, link, tether, lifted: this.qubits[idx].pos.clone() };
+        this.group.add(shit, sring, slabel);
+        return { sub, index: idx, hit: shit, ring: sring, ringMat, label: slabel, lifted: this.qubits[idx].pos.clone() };
       });
 
       this.hubs.push({ item, index, color, group, ringMats, glow, hit, label, scale: 1, active: 0, subs });
     });
   }
 
-  private nearest(target: THREE.Vector3, exclude: Set<number>): number {
+  private nearest(target: THREE.Vector3, exclude: Set<number>, skipBridges = false): number {
     let best = -1;
     let bestD = Infinity;
     this.qubits.forEach((q, i) => {
       if (exclude.has(i)) return;
+      if (skipBridges && this.topology.nodes[i].bridge) return;
       const d = q.pos.distanceToSquared(target);
       if (d < bestD) {
         bestD = d;
@@ -408,27 +431,6 @@ export class QubitLattice {
     if (hit.kind === 'item') hub.label.element.classList.toggle('hover', on);
     else hub.subs.find((s) => s.sub.id === hit.subId)?.label.element.classList.toggle('hover', on);
   }
-}
-
-const linkDir = new THREE.Vector3();
-
-function makeLink(color: THREE.Color): THREE.Mesh {
-  const mesh = new THREE.Mesh(linkGeometry, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0 }));
-  mesh.visible = false;
-  return mesh;
-}
-
-/** Coloca un cilindro unitario entre dos puntos con el grosor indicado. */
-function orientLink(mesh: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3, thickness: number): void {
-  linkDir.copy(b).sub(a);
-  const len = linkDir.length();
-  if (len < 1e-5) {
-    mesh.visible = false;
-    return;
-  }
-  mesh.position.copy(a).lerp(b, 0.5);
-  mesh.scale.set(thickness, len, thickness);
-  mesh.quaternion.setFromUnitVectors(UP, linkDir.divideScalar(len));
 }
 
 function sameHit(a: HitInfo | null, b: HitInfo | null): boolean {

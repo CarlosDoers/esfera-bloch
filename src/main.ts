@@ -3,7 +3,7 @@ import { App } from './scene/App';
 import { Overlay } from './ui/Overlay';
 import { MENU } from './menu';
 
-const overlay = new Overlay(document.getElementById('ui')!);
+const overlay = new Overlay(document.getElementById('ui')!, MENU);
 const app = new App(document.getElementById('app')!, MENU, overlay);
 
 // Punto de integración: aquí es donde el menú "navega".

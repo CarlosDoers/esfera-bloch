@@ -37,6 +37,8 @@ export class App {
   private pointerInside = false;
   private focusYaw: number | null = null;
   private lastCount = -1;
+  /** Territorio señalado desde el raíl HTML cuando el puntero no está sobre la escena. */
+  private railHover: HitInfo | null = null;
 
   private readonly sphere: BlochSphere;
   private readonly lattice: QubitLattice;
@@ -103,11 +105,26 @@ export class App {
     // --- postprocesado ---
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(w, h), 0.9, 0.6, 0.18));
+    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(w, h), 0.55, 0.7, 0.35));
     this.composer.addPass(new OutputPass());
 
+    this.fitCamera();
     this.bindEvents();
     this.renderer.setAnimationLoop(() => this.tick());
+  }
+
+  /**
+   * Aleja la cámara lo justo para que la esfera entre por el lado más estrecho del
+   * encuadre. Sin esto, en vertical (móvil, tótem) la esfera se sale por los bordes.
+   * Solo empuja hacia fuera: el encuadre de escritorio y el zoom manual no se tocan.
+   */
+  private fitCamera(): void {
+    const vFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect);
+    const need = 1.5 / Math.tan(Math.min(vFov, hFov) / 2); // radio 1 + margen
+    if (this.camera.position.distanceTo(this.controls.target) < need) {
+      this.camera.position.sub(this.controls.target).setLength(need).add(this.controls.target);
+    }
   }
 
   select(id: string | null): void {
@@ -152,7 +169,7 @@ export class App {
     this.stars.update(dt, this.focus);
     this.floor.setFocus(this.focus);
 
-    const hit = this.pointerInside ? this.pick() : null;
+    const hit = this.pointerInside ? this.pick() : this.railHover;
     this.lattice.setHovered(hit);
     this.container.classList.toggle('is-hover', hit !== null && hit.kind !== 'qubit');
 
@@ -207,6 +224,10 @@ export class App {
 
     this.overlay.onClose = () => this.select(null);
     this.overlay.onSubClick = (item, sub) => this.onNavigate(item, sub);
+    this.overlay.onRailClick = (item) => this.select(item?.id ?? null);
+    this.overlay.onRailHover = (item) => {
+      this.railHover = item ? { kind: 'item', itemId: item.id } : null;
+    };
   }
 
   private handleClick(hit: HitInfo | null): void {
@@ -236,5 +257,6 @@ export class App {
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
     this.labelRenderer.setSize(w, h);
+    this.fitCamera();
   }
 }
