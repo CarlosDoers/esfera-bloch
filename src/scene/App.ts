@@ -10,8 +10,7 @@ import type { Overlay } from '../ui/Overlay';
 import { BlochSphere } from './BlochSphere';
 import { easeTo } from './helpers';
 import { QubitLattice, type HitInfo } from './QubitLattice';
-import { Floor } from './Floor';
-import { Starfield } from './Starfield';
+import { PALETTE } from '../palette';
 
 /** Altura del centro de la esfera sobre el suelo. */
 export const SPHERE_Y = 1.6;
@@ -54,8 +53,6 @@ export class App {
 
   private readonly sphere: BlochSphere;
   private readonly lattice: QubitLattice;
-  private readonly stars: Starfield;
-  private readonly floor = new Floor();
 
   /** 0 = vista general, 1 = una sección enfocada (el resto se atenúa). */
   private focus = 0;
@@ -82,8 +79,10 @@ export class App {
     container.appendChild(this.labelRenderer.domElement);
 
     // --- escena / cámara ---
-    this.scene.background = new THREE.Color(0x02040a);
-    this.scene.fog = new THREE.FogExp2(0x02040a, 0.028);
+    // Fondo plano y sin niebla: fuera el campo de estrellas y el suelo espejo con
+    // rejilla infinita. Eran los clichés de "escena 3D" más reconocibles y competían
+    // con lo único que importa, que es el objeto.
+    this.scene.background = new THREE.Color(PALETTE.bg);
 
     this.camera = new THREE.PerspectiveCamera(42, w / h, 0.1, 200);
     this.camera.position.set(3.9, 3.0, -3.9);
@@ -111,13 +110,13 @@ export class App {
     this.sphere.group.position.copy(this.center);
     this.lattice = new QubitLattice(items, QUBIT_COUNT);
     this.sphere.group.add(this.lattice.group); // gira junto con la esfera
-    this.stars = new Starfield();
-    this.scene.add(this.sphere.group, this.floor.group, this.stars.points);
+    this.scene.add(this.sphere.group);
 
     // --- postprocesado ---
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(w, h), 0.55, 0.7, 0.35));
+    // Umbral alto: el bloom deja de ser ambiente y solo alcanza a lo seleccionado.
+    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(w, h), 0.32, 0.8, 0.62));
     this.composer.addPass(new OutputPass());
 
     this.fitCamera();
@@ -204,8 +203,6 @@ export class App {
     this.camera.getWorldPosition(this.camWorld);
     this.sphere.update(dt, this.focus);
     this.lattice.update(dt, this.camWorld, this.focus);
-    this.stars.update(dt, this.focus);
-    this.floor.setFocus(this.focus);
 
     const hit = this.pointerInside ? this.pick() : this.railHover;
     this.lattice.setHovered(hit);

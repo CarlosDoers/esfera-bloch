@@ -1,8 +1,16 @@
 import * as THREE from 'three';
-import { circlePoints, fresnelMaterial, glowSprite, makeLabel } from './helpers';
+import { fresnelMaterial, glowSprite, makeLabel } from './helpers';
+import { PALETTE } from '../palette';
 
-const CYAN = 0x66eaff;
-const PINK = 0xff4fd8;
+/**
+ * La esfera es estructura, no luz. Antes el ecuador, la hélice y el vector tiraban de
+ * cian y magenta a tope y todo iba en aditivo: con la escena entera brillando no había
+ * contra qué contrastar. Ahora el armazón va en el color de línea, la hélice y el vector
+ * en texto, y el acento se reserva para el ecuador —que es lo que da sentido a la esfera—.
+ */
+const STRUCTURE = PALETTE.line;
+const ACCENT = PALETTE.accent;
+const TEXT = PALETTE.text;
 const REST_DIM = 0.16; // intensidad que conserva la esfera con una sección enfocada
 /**
  * Entrada por fases. Primero se dibuja el armazón de la esfera —cristal, rejilla,
@@ -44,7 +52,7 @@ export class BlochSphere {
     this.runner = this.buildRunner();
     this.runnerGlow = this.runner.children[0] as THREE.Sprite;
     this.vector = this.buildStateVector();
-    this.coreGlow = glowSprite('rgba(255,79,216,1)', 1.6, 0.35);
+    this.coreGlow = glowSprite('rgba(79,208,238,1)', 1.1, 0.12);
     this.group.add(this.coreGlow);
   }
 
@@ -62,15 +70,15 @@ export class BlochSphere {
     this.vector.rotation.y = this.time * 0.5;
 
     // Respiración sutil del ecuador y del núcleo.
-    this.equatorMat.opacity = (0.8 + 0.2 * Math.sin(this.time * 1.4)) * this.dim * this.reveal(AT_EQUATOR);
-    this.coreGlow.material.opacity = (0.28 + 0.1 * Math.sin(this.time * 1.1 + 1)) * this.dim * this.reveal(AT_VECTOR);
+    this.equatorMat.opacity = 0.5 * this.dim * this.reveal(AT_EQUATOR); // sin respiración: no todo tiene que latir
+    this.coreGlow.material.opacity = 0.12 * this.dim * this.reveal(AT_VECTOR);
 
     // El vector de estado no aparece: crece desde el centro cuando le toca.
     this.vector.scale.setScalar(this.reveal(AT_VECTOR));
 
     // Todo lo demás baja de intensidad de forma proporcional.
     for (const { mat, base, at } of this.fades) mat.opacity = base * this.dim * this.reveal(at);
-    this.rimMat.uniforms.uIntensity.value = 0.9 * this.dim * this.reveal(AT_SHELL);
+    this.rimMat.uniforms.uIntensity.value = 0.35 * this.dim * this.reveal(AT_SHELL);
     const kets = String(this.dim * this.reveal(AT_KETS));
     for (const el of this.ketLabels) el.style.opacity = kets;
   }
@@ -94,9 +102,9 @@ export class BlochSphere {
       new THREE.SphereGeometry(1, 64, 64),
       this.fade(
         new THREE.MeshPhysicalMaterial({
-          color: 0x0b1c2e,
+          color: 0x0a1018,
           transparent: true,
-          opacity: 0.16,
+          opacity: 0.2,
           roughness: 0.15,
           metalness: 0.1,
           depthWrite: false,
@@ -106,7 +114,7 @@ export class BlochSphere {
     glass.renderOrder = -1;
     this.group.add(glass);
 
-    const rimMat = fresnelMaterial(CYAN, 3.2, 0.9);
+    const rimMat = fresnelMaterial(ACCENT, 3.6, 0.35);
     this.group.add(new THREE.Mesh(new THREE.SphereGeometry(1.005, 64, 64), rimMat));
     return rimMat;
   }
@@ -130,32 +138,23 @@ export class BlochSphere {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
     const mat = this.fade(
       new THREE.PointsMaterial({
-        color: 0x8ff0ff,
-        size: 0.015,
+        color: STRUCTURE,
+        size: 0.014,
         sizeAttenuation: true,
         transparent: true,
-        opacity: 0.3,
+        opacity: 0.9,
         depthWrite: false,
-        blending: THREE.AdditiveBlending,
       }),
     );
     this.group.add(new THREE.Points(geo, mat));
   }
 
   private buildEquator(): THREE.MeshBasicMaterial {
-    const mat = new THREE.MeshBasicMaterial({ color: CYAN, transparent: true, opacity: 0.9 });
+    const mat = new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.5 });
     const eq = new THREE.Mesh(new THREE.TorusGeometry(1, 0.007, 8, 220), mat);
     eq.rotation.x = Math.PI / 2;
     this.group.add(eq);
 
-    // Círculo punteado justo por fuera del ecuador
-    const ring = new THREE.Points(
-      circlePoints(1.08, 140),
-      this.fade(
-        new THREE.PointsMaterial({ color: 0xbff8ff, size: 0.018, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending }),
-      ),
-    );
-    this.group.add(ring);
     return mat;
   }
 
@@ -181,7 +180,7 @@ export class BlochSphere {
     const curve = new THREE.CatmullRomCurve3(pts);
     const tube = new THREE.Mesh(
       new THREE.TubeGeometry(curve, 500, 0.011, 8, false),
-      this.fade(new THREE.MeshBasicMaterial({ color: PINK, transparent: true, opacity: 0.95 }), 0.95, AT_HELIX),
+      this.fade(new THREE.MeshBasicMaterial({ color: STRUCTURE, transparent: true, opacity: 0.9 }), 0.9, AT_HELIX),
     );
     this.group.add(tube);
     return curve;
@@ -190,9 +189,9 @@ export class BlochSphere {
   private buildRunner(): THREE.Object3D {
     const runner = new THREE.Mesh(
       new THREE.SphereGeometry(0.035, 16, 16),
-      this.fade(new THREE.MeshBasicMaterial({ color: 0xffd9f7 }), 1, AT_HELIX),
+      this.fade(new THREE.MeshBasicMaterial({ color: TEXT }), 1, AT_HELIX),
     );
-    runner.add(glowSprite('rgba(255,120,230,1)', 0.45, 0.9));
+    runner.add(glowSprite('rgba(232,237,243,1)', 0.3, 0.5));
     this.group.add(runner);
     return runner;
   }
@@ -210,10 +209,10 @@ export class BlochSphere {
     tip.position.y = 0.955;
     const head = new THREE.Mesh(
       new THREE.SphereGeometry(0.03, 16, 16),
-      this.fade(new THREE.MeshBasicMaterial({ color: 0xff7de9 }), 1, AT_VECTOR),
+      this.fade(new THREE.MeshBasicMaterial({ color: ACCENT }), 1, AT_VECTOR),
     );
     head.position.y = 1;
-    const headGlow = glowSprite('rgba(255,125,233,1)', 0.5, 0.9);
+    const headGlow = glowSprite('rgba(79,208,238,1)', 0.34, 0.55);
     this.fade(headGlow.material, 0.9, AT_VECTOR);
     head.add(headGlow);
     arm.add(shaft, tip, head);
@@ -223,7 +222,7 @@ export class BlochSphere {
     const px = Math.sin(theta);
     const py = Math.cos(theta);
     const dashMat = this.fade(
-      new THREE.LineDashedMaterial({ color: 0xff9be9, dashSize: 0.045, gapSize: 0.03, transparent: true, opacity: 0.7 }),
+      new THREE.LineDashedMaterial({ color: STRUCTURE, dashSize: 0.045, gapSize: 0.03, transparent: true, opacity: 0.9 }),
       0.7,
       AT_VECTOR,
     );

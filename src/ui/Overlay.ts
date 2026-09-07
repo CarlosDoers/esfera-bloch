@@ -41,8 +41,7 @@ export class Overlay {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'rail-item';
-        btn.style.setProperty('--c', item.color);
-        btn.innerHTML = `<span class="rail-dot"></span><span class="rail-label">${item.label}</span>`;
+        btn.textContent = item.label;
         btn.addEventListener('click', () => this.onRailClick(this.activeId === item.id ? null : item));
         btn.addEventListener('pointerenter', () => this.onRailHover(item));
         btn.addEventListener('pointerleave', () => this.onRailHover(null));
@@ -65,7 +64,6 @@ export class Overlay {
 
   showItem(item: Territory): void {
     this.setActive(item.id);
-    this.panel.style.setProperty('--accent', item.color);
     this.title.textContent = item.label;
     this.desc.textContent = item.description;
 
@@ -75,9 +73,7 @@ export class Overlay {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.innerHTML =
-          `<span class="dot"></span><span>${sub.label}` +
-          (sub.description ? `<small>${sub.description}</small>` : '') +
-          `</span><span class="arrow">→</span>`;
+          `<span>${sub.label}</span>` + (sub.description ? `<small>${sub.description}</small>` : '');
         btn.addEventListener('click', () => this.onSubClick(item, sub));
         li.appendChild(btn);
         return li;

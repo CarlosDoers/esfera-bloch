@@ -53,6 +53,24 @@ La cámara empieza cerca y casi a la altura del ecuador y se retira durante 3,6 
 autogiro espera a que termine. Si pulsas algo mientras tanto, la entrada se da por
 terminada y no te hace esperar.
 
+## Paleta
+
+**Un acento y neutros**, en `src/palette.ts` y replicada en los tokens de `style.css`.
+
+Antes había cinco colores puros repartidos por la rueda —40°, 128°, 190°, 255°, 313°,
+todos a valor máximo—, uno por sección. Eso es lo que sale cuando se elige un color por
+sección en vez de una paleta, y era lo que hacía que todo pareciera un árbol de navidad:
+con cinco acentos, ninguno destaca.
+
+Con un solo acento la jerarquía es automática. Las reglas de la casa:
+
+- El acento es **solo para lo seleccionado** y para lo que de verdad está pasando.
+- La estructura —retícula, acopladores, líneas— va en el color de línea y **no emite luz**.
+- Los marcadores de sección están apagados en reposo; el brillo se lo gana el elegido.
+- Mayúsculas espaciadas solo en dos sitios: el logotipo y el antetítulo del panel. Cuando
+  todo es un micro-label espaciado no hay jerarquía tipográfica, solo textura.
+- Nada de `backdrop-filter`, radios grandes, sombras enormes ni degradados de borde.
+
 ## Stack
 
 - [Vite](https://vite.dev) + TypeScript
@@ -95,15 +113,15 @@ src/
    ├─ BlochSphere.ts  # esfera, ecuador, hélice, vector de estado, |0⟩ |1⟩
    ├─ HeavyHex.ts     # topología del Heron: 156 cúbits, 176 acopladores, BFS
    ├─ QubitLattice.ts # la retícula envuelta en la esfera, secciones y subsecciones
-   ├─ Floor.ts        # suelo con espejo suave + rejilla
-   ├─ Starfield.ts    # estrellas
    └─ helpers.ts      # geometrías, texturas, etiquetas, fresnel
 ```
 
 ## Contenido del menú
 
 Todo el contenido está en `src/menu.json`. El cliente llama **territorios** a las
-entradas principales; cada una lleva sus **items** (subsecciones):
+entradas principales; cada una lleva sus **items** (subsecciones). No hay color por
+territorio: el site usa **un acento y neutros** (`src/palette.ts`) y las secciones se
+distinguen por su sitio y su nombre.
 
 ```json
 {
@@ -111,7 +129,6 @@ entradas principales; cada una lleva sus **items** (subsecciones):
     {
       "id": "grado",
       "label": "Grado",
-      "color": "#4fe3ff",
       "description": "Formación académica de excelencia con enfoque cuántico…",
       "items": [
         { "id": "plan-de-estudios", "label": "Plan de estudios", "description": "8 semestres · 42 asignaturas · 320 créditos" }

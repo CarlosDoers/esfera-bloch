@@ -3,6 +3,7 @@ import type { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import type { Territory, SubItem } from '../menu';
 import { easeTo, glowSprite, makeLabel } from './helpers';
 import { bfsOrder, COLS, heavyHex, ROWS, type Topology } from './HeavyHex';
+import { PALETTE } from '../palette';
 
 export type HitInfo =
   | { kind: 'item'; itemId: string }
@@ -52,15 +53,9 @@ const BOOT_RISE = 0.5; // lo que tarda un cúbit en llegar y encenderse
 const BOOT_DROP = 0.3; // desde cuánto más lejos del centro llega, en radios
 const POLE_GAP = 0.42; // radianes libres en cada polo, para |0⟩ y |1⟩
 const REST_DIM = 0.16; // intensidad que conserva lo no seleccionado
-const BASE_COLOR = new THREE.Color(0x8ff0ff);
-/**
- * Luminancia objetivo para el color de un territorio en la escena 3D. El bloom recorta
- * por luminancia, y el rosa y el morado la tienen mucho más baja que el cian, el verde
- * o el ámbar —la luminancia la manda el canal verde—, así que con el mismo umbral
- * brillaban la tercera parte. Se sube su intensidad hasta igualarlos; el color de la
- * etiqueta y del panel no se toca, que ahí no interviene el bloom.
- */
-const GLOW_LUMA = 0.8;
+const BASE_COLOR = new THREE.Color(PALETTE.quiet); // el cúbit en reposo no emite luz
+const ACCENT = new THREE.Color(PALETTE.accent); // la sección seleccionada y sus subsecciones
+const TEXT = new THREE.Color(PALETTE.text); // las subsecciones: claras, pero sin robarle el acento a la sección
 const UP = new THREE.Vector3(0, 1, 0);
 const FORWARD = new THREE.Vector3(0, 0, 1);
 const LABEL_DROP = new THREE.Vector3(0, -0.14, 0);
@@ -163,7 +158,7 @@ export class QubitLattice {
     // El anillo es un toro de radio 1 en el plano ecuatorial: subiendo o bajando en Y y
     // escalándolo recorre la esfera como un paralelo que se desplaza.
     this.sweepMat = new THREE.MeshBasicMaterial({
-      color: 0xbdf6ff,
+      color: PALETTE.text,
       transparent: true,
       opacity: 0,
       blending: THREE.AdditiveBlending,
@@ -241,7 +236,7 @@ export class QubitLattice {
 
     // Todo lo que no pertenece a la sección enfocada baja de intensidad.
     const rest = 1 - (1 - REST_DIM) * focus;
-    (this.links.material as THREE.LineBasicMaterial).opacity = 0.42 * rest;
+    (this.links.material as THREE.LineBasicMaterial).opacity = 0.9 * rest;
 
     // Acopladores ya encendidos: los que el anillo ha dejado atrás (van ordenados por
     // la latitud del extremo más bajo, así que basta con contar desde el principio).
@@ -267,18 +262,24 @@ export class QubitLattice {
       const isSel = hub.item.id === this.selectedId;
       const isHover = this.hovered?.kind === 'item' && this.hovered.itemId === hub.item.id;
       const boot = this.bootOf(hub.index);
-      const k = isSel ? 1 : rest; // la sección enfocada conserva su color
+      // Si los cinco marcadores brillan a la vez, ninguno destaca. En reposo son un punto
+      // apagado; el brillo se lo gana el que está elegido, y algo menos el señalado.
+      const attention = isSel ? 1 : isHover ? 0.6 : 0.18;
+      const k = attention * (isSel ? 1 : rest);
       const hubPos = this.qubits[hub.index].pos;
 
       hub.scale = easeTo(hub.scale, isSel ? 1.3 : isHover ? 1.2 : 1, dt, 8);
       hub.active = easeTo(hub.active, isSel ? 1 : 0, dt, 5);
       hub.group.visible = boot > 0.01;
       hub.group.scale.setScalar(hub.scale * boot);
-      hub.ringMats[0].opacity = 0.9 * k;
-      hub.ringMats[1].opacity = 0.35 * k;
-      hub.glow.material.opacity = 0.6 * k * (isSel || isHover ? 1.15 : 1);
+      hub.ringMats[0].opacity = 0.8 * k;
+      hub.ringMats[1].opacity = 0.25 * k;
+      // El halo va al cuadrado: en reposo desaparece del todo en vez de quedarse tenue.
+      hub.glow.material.opacity = 0.55 * attention * attention * (isSel ? 1 : rest);
       this.qubits[hub.index].targetScale = HUB_SIZE * hub.scale;
-      this.qubits[hub.index].targetColor.copy(hub.color).multiplyScalar(k);
+      this.qubits[hub.index].targetColor
+        .copy(hub.color)
+        .multiplyScalar((0.3 + 0.7 * attention) * (isSel ? 1 : rest));
       this.faceLabel(hub.label, hubPos, boot > 0.5);
 
       // Marco tangente al eje de la cámara: `tanV` apunta hacia arriba en pantalla y
@@ -296,7 +297,7 @@ export class QubitLattice {
         const q = this.qubits[s.index];
         const a = hub.active;
         q.targetScale = BASE_SIZE + (SUB_SIZE - BASE_SIZE) * a;
-        q.targetColor.copy(BASE_COLOR).multiplyScalar(rest).lerp(hub.color, a);
+        q.targetColor.copy(BASE_COLOR).multiplyScalar(rest).lerp(TEXT, a);
 
         // Sitio de destino: corona sobre el cúbit de la sección, de izquierda a derecha
         // en el mismo orden que el panel. El cúbit viaja hasta ahí desde su hueco real.
@@ -394,7 +395,7 @@ export class QubitLattice {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
     geo.setDrawRange(0, 0);
-    return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x5fd4ee, transparent: true, opacity: 0.42 }));
+    return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: PALETTE.line, transparent: true, opacity: 0.9 }));
   }
 
   private buildHubs(items: Territory[]): void {
@@ -414,7 +415,7 @@ export class QubitLattice {
     items.forEach((item, k) => {
       const index = hubIndex[k];
       const q = this.qubits[index];
-      const color = balanceGlow(item.color);
+      const color = ACCENT.clone();
       q.scale = q.targetScale = HUB_SIZE;
       q.color.copy(color);
       q.targetColor.copy(color);
@@ -430,12 +431,12 @@ export class QubitLattice {
       ];
       const ring = new THREE.Mesh(new THREE.TorusGeometry(0.095, 0.007, 8, 48), ringMats[0]);
       const ring2 = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.003, 6, 64), ringMats[1]);
-      const glow = glowSprite(toRgba(new THREE.Color(item.color)), 0.55, 0.6);
+      const glow = glowSprite(toRgba(ACCENT), 0.5, 0.45);
       const hit = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 8), invisible());
       hit.userData = { kind: 'item', itemId: item.id } satisfies HitInfo;
       group.add(ring, ring2, glow, hit);
 
-      const label = makeLabel(item.label, 'hub-label', item.color);
+      const label = makeLabel(item.label, 'hub-label');
       label.position.copy(q.pos).multiplyScalar(1.2).add(LABEL_DROP); // hacia fuera y un poco por debajo
       this.group.add(group, label);
 
@@ -454,7 +455,7 @@ export class QubitLattice {
         const shit = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), invisible());
         shit.visible = false;
         shit.userData = { kind: 'sub', itemId: item.id, subId: sub.id } satisfies HitInfo;
-        const slabel = makeLabel(sub.label, 'sub-label', item.color);
+        const slabel = makeLabel(sub.label, 'sub-label');
         slabel.visible = false;
         // Las etiquetas son anchas: centradas sobre su cúbit se meterían por encima de
         // la esfera. Se alinean hacia fuera —la de la derecha crece a la derecha y la de
@@ -583,13 +584,6 @@ function sameHit(a: HitInfo | null, b: HitInfo | null): boolean {
   if (a.kind === 'sub' && b.kind === 'sub') return a.itemId === b.itemId && a.subId === b.subId;
   if (a.kind === 'item' && b.kind === 'item') return a.itemId === b.itemId;
   return false;
-}
-
-/** Sube la intensidad de un color hasta `GLOW_LUMA` para que todos florezcan igual. */
-function balanceGlow(hex: string): THREE.Color {
-  const c = new THREE.Color(hex);
-  const luma = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
-  return c.multiplyScalar(Math.max(1, GLOW_LUMA / Math.max(luma, 1e-3)));
 }
 
 function toRgba(c: THREE.Color): string {
