@@ -39,7 +39,17 @@ const crownRadius = () =>
   (1 + (window.innerWidth < NARROW_PX ? SUB_CLEARANCE_NARROW : SUB_CLEARANCE)) / Math.sin(SUB_ANGLE);
 const SUB_ARC_STEP = 0.7; // apertura de la corona por subsección (rad)
 const SUB_ARC_MAX = 2; // apertura máxima de la corona (rad)
-const BOOT_RATE = 60; // cúbits por segundo durante el arranque
+/**
+ * Entrada. En vez de encender los cúbits por orden de índice, un **anillo de luz baja
+ * del polo |0⟩ al polo |1⟩** y va encendiendo las bandas de la retícula a su paso: como
+ * las filas del chip son paralelos, el barrido por latitud recorre el procesador fila a
+ * fila y de paso enseña cómo está envuelto. Cada cúbit llega desde fuera de la esfera,
+ * destella y se asienta con un rebote.
+ */
+const BOOT_LEAD = 0.5; // lo que se espera a que aparezca el armazón de la esfera
+const BOOT_SWEEP = 2; // lo que tarda el anillo en bajar de polo a polo
+const BOOT_RISE = 0.5; // lo que tarda un cúbit en llegar y encenderse
+const BOOT_DROP = 0.3; // desde cuánto más lejos del centro llega, en radios
 const POLE_GAP = 0.42; // radianes libres en cada polo, para |0⟩ y |1⟩
 const REST_DIM = 0.16; // intensidad que conserva lo no seleccionado
 const BASE_COLOR = new THREE.Color(0x8ff0ff);
@@ -59,6 +69,8 @@ const SUB_LABEL_ABOVE = 0.15; // ...y por encima, alternando para que no se pise
 
 interface Qubit {
   pos: THREE.Vector3; // hueco en la esfera
+  /** Latitud normalizada, 0 en el polo |0⟩ y 1 en el |1⟩: marca su turno de encendido. */
+  band: number;
   drawPos: THREE.Vector3; // posición dibujada (las subsecciones se despegan)
   seed: number;
   scale: number;
@@ -114,8 +126,11 @@ export class QubitLattice {
   private readonly mesh: THREE.InstancedMesh;
   private readonly hitMesh: THREE.InstancedMesh;
   private readonly links: THREE.LineSegments;
-  private readonly linkMaxIndex: number[] = [];
+  private readonly linkBand: number[] = [];
   private readonly tooltip: CSS2DObject;
+  /** Anillo de luz que baja de polo a polo encendiendo la retícula. */
+  private readonly sweep: THREE.Mesh;
+  private readonly sweepMat: THREE.MeshBasicMaterial;
   private hovered: HitInfo | null = null;
   private selectedId: string | null = null;
   private time = 0;
@@ -126,6 +141,7 @@ export class QubitLattice {
   private readonly tanU = new THREE.Vector3();
   private readonly tanV = new THREE.Vector3();
   private readonly crown = new THREE.Vector3();
+  private readonly tmpColor = new THREE.Color();
 
   constructor(items: Territory[], readonly count: number) {
     const n = this.topology.nodes.length;
@@ -144,13 +160,37 @@ export class QubitLattice {
     this.tooltip = makeLabel('', 'qubit-tip');
     this.tooltip.visible = false;
 
-    this.group.add(this.mesh, this.hitMesh, this.links, this.tooltip);
+    // El anillo es un toro de radio 1 en el plano ecuatorial: subiendo o bajando en Y y
+    // escalándolo recorre la esfera como un paralelo que se desplaza.
+    this.sweepMat = new THREE.MeshBasicMaterial({
+      color: 0xbdf6ff,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.sweep = new THREE.Mesh(new THREE.TorusGeometry(1, 0.008, 6, 120), this.sweepMat);
+    this.sweep.rotation.x = Math.PI / 2;
+
+    this.group.add(this.mesh, this.hitMesh, this.links, this.tooltip, this.sweep);
     this.buildHubs(items);
   }
 
   /** Cúbits ya "encendidos" durante la animación de arranque. */
   get booted(): number {
-    return Math.min(this.count, Math.floor(this.time * BOOT_RATE));
+    let n = 0;
+    for (let i = 0; i < this.count; i++) if (this.bootOf(i) > 0.5) n++;
+    return n;
+  }
+
+  /** Mientras baja el anillo, el resto de la escena espera su turno. */
+  get booting(): boolean {
+    return this.time < BOOT_LEAD + BOOT_SWEEP + BOOT_RISE;
+  }
+
+  /** Avance del anillo de encendido, 0 en el polo |0⟩ y 1 en el |1⟩. */
+  private get front(): number {
+    return (this.time - BOOT_LEAD) / BOOT_SWEEP;
   }
 
   get selected(): string | null {
@@ -203,11 +243,14 @@ export class QubitLattice {
     const rest = 1 - (1 - REST_DIM) * focus;
     (this.links.material as THREE.LineBasicMaterial).opacity = 0.42 * rest;
 
-    // Enlaces que ya se pueden mostrar (ordenados por índice máximo).
-    const booted = this.booted;
+    // Acopladores ya encendidos: los que el anillo ha dejado atrás (van ordenados por
+    // la latitud del extremo más bajo, así que basta con contar desde el principio).
+    const front = this.front;
     let n = 0;
-    while (n < this.linkMaxIndex.length && this.linkMaxIndex[n] < booted) n++;
+    while (n < this.linkBand.length && this.linkBand[n] < front) n++;
     this.links.geometry.setDrawRange(0, n * 2);
+
+    this.updateSweep();
 
     this.camLocal.copy(camWorld);
     this.group.worldToLocal(this.camLocal);
@@ -283,11 +326,15 @@ export class QubitLattice {
       q.scale = easeTo(q.scale, q.targetScale * (i === hoverIndex ? 1.6 : 1), dt, 8);
       q.color.lerp(q.targetColor, Math.min(1, dt * 6));
       const pulse = 1 + 0.18 * Math.sin(this.time * 2.4 + q.seed);
-      this.dummy.position.copy(q.drawPos);
-      this.dummy.scale.setScalar(q.scale * this.bootOf(i) * pulse);
+      const boot = this.bootOf(i);
+
+      // Llega desde fuera de la esfera y se posa con un rebote, con un destello al pasar.
+      this.dummy.position.copy(q.drawPos).multiplyScalar(1 + BOOT_DROP * (1 - backOut(boot)));
+      this.dummy.scale.setScalar(q.scale * boot * pulse);
       this.dummy.updateMatrix();
       this.mesh.setMatrixAt(i, this.dummy.matrix);
-      this.mesh.setColorAt(i, q.color);
+      const ignition = 4 * boot * (1 - boot);
+      this.mesh.setColorAt(i, this.tmpColor.copy(q.color).multiplyScalar(1 + 3 * ignition));
       this.dummy.scale.setScalar(1);
       this.dummy.updateMatrix();
       this.hitMesh.setMatrixAt(i, this.dummy.matrix);
@@ -322,6 +369,7 @@ export class QubitLattice {
       const pos = new THREE.Vector3(r * Math.sin(phi), Math.cos(theta), r * Math.cos(phi)).multiplyScalar(RADIUS);
       this.qubits.push({
         pos,
+        band,
         drawPos: pos.clone(),
         seed: Math.random() * Math.PI * 2,
         scale: BASE_SIZE,
@@ -332,16 +380,16 @@ export class QubitLattice {
     }
   }
 
-  /** Los 176 acopladores reales del Heron, ordenados para que aparezcan con el arranque. */
+  /** Los 176 acopladores reales del Heron, ordenados por latitud para el barrido. */
   private buildLinks(): THREE.LineSegments {
     const sorted = this.topology.edges
-      .map(([a, b]): [number, number] => (a < b ? [a, b] : [b, a]))
-      .sort((p, q) => p[1] - q[1]);
+      .map(([a, b]) => ({ a, b, band: Math.max(this.qubits[a].band, this.qubits[b].band) }))
+      .sort((p, q) => p.band - q.band);
     const arr = new Float32Array(sorted.length * 6);
-    sorted.forEach(([a, b], k) => {
+    sorted.forEach(({ a, b, band }, k) => {
       this.qubits[a].pos.toArray(arr, k * 6);
       this.qubits[b].pos.toArray(arr, k * 6 + 3);
-      this.linkMaxIndex.push(b);
+      this.linkBand.push(band);
     });
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
@@ -477,8 +525,26 @@ export class QubitLattice {
     }
   }
 
+  /**
+   * Coloca el anillo de encendido en su latitud. Aparece justo antes de empezar el
+   * barrido y se apaga al llegar al polo |1⟩; después ya no se dibuja.
+   */
+  private updateSweep(): void {
+    const p = this.front;
+    if (p < -0.25 || p > 1.35) {
+      this.sweep.visible = false;
+      return;
+    }
+    this.sweep.visible = true;
+    const theta = POLE_GAP + THREE.MathUtils.clamp(p, 0, 1) * (Math.PI - 2 * POLE_GAP);
+    this.sweep.position.y = Math.cos(theta) * RADIUS;
+    this.sweep.scale.setScalar(Math.max(0.02, Math.sin(theta) * RADIUS * 1.03));
+    // Entra y sale con suavidad para que no aparezca ni desaparezca de golpe.
+    this.sweepMat.opacity = 0.9 * THREE.MathUtils.smoothstep(p, -0.25, 0.05) * (1 - THREE.MathUtils.smoothstep(p, 1, 1.35));
+  }
+
   private bootOf(i: number): number {
-    return THREE.MathUtils.smoothstep(this.time * BOOT_RATE - i, 0, 8);
+    return THREE.MathUtils.smoothstep((this.front - this.qubits[i].band) / (BOOT_RISE / BOOT_SWEEP), 0, 1);
   }
 
   /** Oculta/atenúa una etiqueta según mire o no hacia la cámara. */
@@ -502,6 +568,12 @@ export class QubitLattice {
     if (hit.kind === 'item') hub.label.element.classList.toggle('hover', on);
     else hub.subs.find((s) => s.sub.id === hit.subId)?.label.element.classList.toggle('hover', on);
   }
+}
+
+/** Suavizado con rebote: el cúbit se pasa un poco de su sitio y vuelve. */
+function backOut(t: number): number {
+  const u = t - 1;
+  return 1 + 2.2 * u * u * u + 1.2 * u * u;
 }
 
 function sameHit(a: HitInfo | null, b: HitInfo | null): boolean {

@@ -36,6 +36,23 @@ Como la esfera esconde la mitad de sus cúbits en la cara oculta, un **raíl** l
 las secciones siempre visibles y navegables con teclado; al pulsar una, la esfera gira hasta
 ella.
 
+## Entrada
+
+El arranque va por fases, y el gesto que lo lleva es un **anillo de luz que baja del
+polo |0⟩ al |1⟩**: como las filas del chip son paralelos, el barrido por latitud
+recorre el procesador fila a fila y de paso enseña cómo está envuelto sobre la esfera.
+
+1. **0 – 0,9 s.** Aparece el armazón: cristal, borde, rejilla de meridianos y ecuador.
+2. **0,97 – 3,0 s.** El anillo baja encendiendo bandas. Cada cúbit **llega desde fuera de
+   la esfera**, destella y se posa con un rebote; los acopladores se dibujan justo
+   detrás del anillo. El contador del HUD sube de 0 a 156 al ritmo del barrido.
+3. **2,7 – 3,9 s.** Llegan la hélice con su fotón y el **vector de estado, que crece
+   desde el centro**, y aparecen los estados base |0⟩ y |1⟩.
+
+La cámara empieza cerca y casi a la altura del ecuador y se retira durante 3,6 s; el
+autogiro espera a que termine. Si pulsas algo mientras tanto, la entrada se da por
+terminada y no te hace esperar.
+
 ## Stack
 
 - [Vite](https://vite.dev) + TypeScript

@@ -4,6 +4,18 @@ import { circlePoints, fresnelMaterial, glowSprite, makeLabel } from './helpers'
 const CYAN = 0x66eaff;
 const PINK = 0xff4fd8;
 const REST_DIM = 0.16; // intensidad que conserva la esfera con una sección enfocada
+/**
+ * Entrada por fases. Primero se dibuja el armazón de la esfera —cristal, rejilla,
+ * ecuador—, después la retícula del chip la va cubriendo (eso lo lleva `QubitLattice`)
+ * y al final llegan la hélice y el vector de estado, que son los que dan vida. Cada
+ * elemento guarda el segundo en que empieza a aparecer.
+ */
+const REVEAL_SPAN = 0.7; // lo que tarda cada elemento en entrar
+const AT_SHELL = 0.15;
+const AT_EQUATOR = 0.35;
+const AT_HELIX = 2.7;
+const AT_VECTOR = 3;
+const AT_KETS = 3.15;
 
 type Fadeable = THREE.Material & { opacity: number };
 
@@ -13,7 +25,7 @@ export class BlochSphere {
 
   private time = 0;
   private dim = 1;
-  private readonly fades: Array<{ mat: Fadeable; base: number }> = [];
+  private readonly fades: Array<{ mat: Fadeable; base: number; at: number }> = [];
   private readonly ketLabels: HTMLElement[] = [];
   private readonly rimMat: THREE.ShaderMaterial;
   private readonly helix: THREE.CatmullRomCurve3;
@@ -44,28 +56,37 @@ export class BlochSphere {
     // Fotón recorriendo la hélice.
     const t = (this.time * 0.07) % 1;
     this.runner.position.copy(this.helix.getPointAt(t));
-    this.runnerGlow.material.opacity = (0.6 + 0.4 * Math.sin(this.time * 9)) * this.dim;
+    this.runnerGlow.material.opacity = (0.6 + 0.4 * Math.sin(this.time * 9)) * this.dim * this.reveal(AT_HELIX);
 
     // Precesión de Larmor del vector de estado alrededor de Z.
     this.vector.rotation.y = this.time * 0.5;
 
     // Respiración sutil del ecuador y del núcleo.
-    this.equatorMat.opacity = (0.8 + 0.2 * Math.sin(this.time * 1.4)) * this.dim;
-    this.coreGlow.material.opacity = (0.28 + 0.1 * Math.sin(this.time * 1.1 + 1)) * this.dim;
+    this.equatorMat.opacity = (0.8 + 0.2 * Math.sin(this.time * 1.4)) * this.dim * this.reveal(AT_EQUATOR);
+    this.coreGlow.material.opacity = (0.28 + 0.1 * Math.sin(this.time * 1.1 + 1)) * this.dim * this.reveal(AT_VECTOR);
+
+    // El vector de estado no aparece: crece desde el centro cuando le toca.
+    this.vector.scale.setScalar(this.reveal(AT_VECTOR));
 
     // Todo lo demás baja de intensidad de forma proporcional.
-    for (const { mat, base } of this.fades) mat.opacity = base * this.dim;
-    this.rimMat.uniforms.uIntensity.value = 0.9 * this.dim;
-    for (const el of this.ketLabels) el.style.opacity = String(this.dim);
+    for (const { mat, base, at } of this.fades) mat.opacity = base * this.dim * this.reveal(at);
+    this.rimMat.uniforms.uIntensity.value = 0.9 * this.dim * this.reveal(AT_SHELL);
+    const kets = String(this.dim * this.reveal(AT_KETS));
+    for (const el of this.ketLabels) el.style.opacity = kets;
   }
 
   // ---------- construcción ----------
 
-  /** Registra un material para que se atenúe al enfocar una sección. */
-  private fade<T extends Fadeable>(mat: T, base = mat.opacity): T {
+  /** Registra un material para que se atenúe al enfocar una sección y entre en su turno. */
+  private fade<T extends Fadeable>(mat: T, base = mat.opacity, at = AT_SHELL): T {
     mat.transparent = true;
-    this.fades.push({ mat, base });
+    this.fades.push({ mat, base, at });
     return mat;
+  }
+
+  /** 0 antes de su turno, 1 cuando ha terminado de entrar. */
+  private reveal(at: number): number {
+    return THREE.MathUtils.smoothstep(this.time, at, at + REVEAL_SPAN);
   }
 
   private buildShell(): THREE.ShaderMaterial {
@@ -160,7 +181,7 @@ export class BlochSphere {
     const curve = new THREE.CatmullRomCurve3(pts);
     const tube = new THREE.Mesh(
       new THREE.TubeGeometry(curve, 500, 0.011, 8, false),
-      this.fade(new THREE.MeshBasicMaterial({ color: PINK, transparent: true, opacity: 0.95 })),
+      this.fade(new THREE.MeshBasicMaterial({ color: PINK, transparent: true, opacity: 0.95 }), 0.95, AT_HELIX),
     );
     this.group.add(tube);
     return curve;
@@ -169,7 +190,7 @@ export class BlochSphere {
   private buildRunner(): THREE.Object3D {
     const runner = new THREE.Mesh(
       new THREE.SphereGeometry(0.035, 16, 16),
-      this.fade(new THREE.MeshBasicMaterial({ color: 0xffd9f7 }), 1),
+      this.fade(new THREE.MeshBasicMaterial({ color: 0xffd9f7 }), 1, AT_HELIX),
     );
     runner.add(glowSprite('rgba(255,120,230,1)', 0.45, 0.9));
     this.group.add(runner);
@@ -182,18 +203,18 @@ export class BlochSphere {
     const arm = new THREE.Group();
     arm.rotation.z = -theta;
 
-    const mat = this.fade(new THREE.MeshBasicMaterial({ color: 0xffffff }), 1);
+    const mat = this.fade(new THREE.MeshBasicMaterial({ color: 0xffffff }), 1, AT_VECTOR);
     const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.92, 8), mat);
     shaft.position.y = 0.46;
     const tip = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 12), mat);
     tip.position.y = 0.955;
     const head = new THREE.Mesh(
       new THREE.SphereGeometry(0.03, 16, 16),
-      this.fade(new THREE.MeshBasicMaterial({ color: 0xff7de9 }), 1),
+      this.fade(new THREE.MeshBasicMaterial({ color: 0xff7de9 }), 1, AT_VECTOR),
     );
     head.position.y = 1;
     const headGlow = glowSprite('rgba(255,125,233,1)', 0.5, 0.9);
-    this.fade(headGlow.material, 0.9);
+    this.fade(headGlow.material, 0.9, AT_VECTOR);
     head.add(headGlow);
     arm.add(shaft, tip, head);
     vector.add(arm);
@@ -203,6 +224,8 @@ export class BlochSphere {
     const py = Math.cos(theta);
     const dashMat = this.fade(
       new THREE.LineDashedMaterial({ color: 0xff9be9, dashSize: 0.045, gapSize: 0.03, transparent: true, opacity: 0.7 }),
+      0.7,
+      AT_VECTOR,
     );
     for (const [a, b] of [
       [new THREE.Vector3(px, py, 0), new THREE.Vector3(px, 0, 0)],

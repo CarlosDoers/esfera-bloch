@@ -19,6 +19,10 @@ export const SPHERE_Y = 1.6;
 const FOCUS_SHIFT = 0.55;
 /** Por debajo de este ancho el panel se va abajo y la esfera necesita todo el sitio. */
 const NARROW_PX = 820;
+/** Retirada de cámara de la entrada: acompaña al barrido que enciende la retícula. */
+const INTRO_SECONDS = 3.6;
+const INTRO_ZOOM = 0.52; // arranca a la mitad de distancia...
+const INTRO_LIFT = 0.35; // ...y más baja, casi al nivel del ecuador
 
 export class App {
   /** Se invoca al pulsar una subsección (cúbit 3D o botón del panel). */
@@ -41,6 +45,10 @@ export class App {
   private pointerInside = false;
   private focusYaw: number | null = null;
   private lastCount = -1;
+  /** Entrada: de dónde sale la cámara, a dónde llega y por dónde va (0..1). */
+  private readonly introFrom = new THREE.Vector3();
+  private readonly introTo = new THREE.Vector3();
+  private introT = 0;
   /** Territorio señalado desde el raíl HTML cuando el puntero no está sobre la escena. */
   private railHover: HitInfo | null = null;
 
@@ -113,6 +121,18 @@ export class App {
     this.composer.addPass(new OutputPass());
 
     this.fitCamera();
+    // Entrada: la cámara empieza cerca y baja, y se retira mientras el anillo de
+    // encendido recorre la esfera. El autogiro espera a que termine.
+    this.introTo.copy(this.camera.position);
+    this.introFrom
+      .copy(this.camera.position)
+      .sub(this.center)
+      .multiplyScalar(INTRO_ZOOM)
+      .add(this.center);
+    this.introFrom.y = this.center.y + (this.introFrom.y - this.center.y) * INTRO_LIFT;
+    this.camera.position.copy(this.introFrom);
+    this.controls.autoRotate = false;
+
     this.bindEvents();
     this.renderer.setAnimationLoop(() => this.tick());
   }
@@ -132,6 +152,7 @@ export class App {
   }
 
   select(id: string | null): void {
+    this.introT = 1; // pulsar durante la entrada la da por terminada
     this.lattice.select(id);
     const item = this.items.find((i) => i.id === id);
     if (item) {
@@ -163,6 +184,13 @@ export class App {
       const delta = Math.atan2(Math.sin(this.focusYaw - cur), Math.cos(this.focusYaw - cur));
       this.sphere.group.rotation.y = cur + delta * Math.min(1, dt * 3.5);
       if (Math.abs(delta) < 0.003) this.focusYaw = null;
+    }
+
+    if (this.introT < 1) {
+      this.introT = Math.min(1, this.introT + dt / INTRO_SECONDS);
+      const k = this.introT * this.introT * (3 - 2 * this.introT);
+      this.camera.position.lerpVectors(this.introFrom, this.introTo, k);
+      if (this.introT >= 1 && !this.lattice.selected) this.controls.autoRotate = true;
     }
 
     this.focus = easeTo(this.focus, this.lattice.selected ? 1 : 0, dt, 4);
