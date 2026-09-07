@@ -46,8 +46,8 @@ recorre el procesador fila a fila y de paso enseña cómo está envuelto sobre l
 2. **0,97 – 3,0 s.** El anillo baja encendiendo bandas. Cada cúbit **llega desde fuera de
    la esfera**, destella y se posa con un rebote; los acopladores se dibujan justo
    detrás del anillo. El contador del HUD sube de 0 a 156 al ritmo del barrido.
-3. **2,7 – 3,9 s.** Llegan la hélice con su fotón y el **vector de estado, que crece
-   desde el centro**, y aparecen los estados base |0⟩ y |1⟩.
+3. **3,0 s.** Aparecen los estados base |0⟩ y |1⟩ y la esfera se queda quieta. La hélice
+   y la flecha ya no entran aquí: son parte de la interacción, no del decorado.
 
 La cámara empieza cerca y casi a la altura del ecuador y se retira durante 3,6 s; el
 autogiro espera a que termine. Si pulsas algo mientras tanto, la entrada se da por
@@ -93,10 +93,12 @@ npm run preview  # sirve dist/
 | Rueda / pellizco | Zoom |
 | Hover sobre un cúbit | Muestra su índice en el chip (Q·042) |
 | Hover sobre una sección | La resalta |
+| Hover sobre una subsección | La flecha del estado apunta a esa opción |
 | Hover sobre el raíl | Resalta su cúbit en la escena, aunque esté en la cara oculta |
 | Clic en el raíl | Igual que pulsar la sección; una segunda pulsación cierra |
 | Clic en una sección | La esfera gira hacia ella, sus subsecciones se despegan hacia fuera formando una corona y se abre el panel. Todo lo demás baja de intensidad |
 | Clic en una subsección o botón del panel | Dispara `app.onNavigate(item, sub)` |
+| Clic en la sección abierta | La cierra y vuelven a verse las demás |
 | Esc / clic en vacío / × | Cierra el submenú y devuelve la escena a su intensidad original |
 
 ## Estructura

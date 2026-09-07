@@ -206,6 +206,8 @@ export class App {
 
     const hit = this.pointerInside ? this.pick() : this.railHover;
     this.lattice.setHovered(hit);
+    // La flecha del estado apunta a la subsección señalada; si no hay ninguna, se retira.
+    this.sphere.setAim(hit?.kind === 'sub' ? this.lattice.subDirection(hit.itemId, hit.subId) : null);
     this.container.classList.toggle('is-hover', hit !== null && hit.kind !== 'qubit');
 
     if (this.lattice.booted !== this.lastCount) {
@@ -271,7 +273,9 @@ export class App {
       return;
     }
     if (hit.kind === 'item') {
-      this.select(hit.itemId);
+      // Pulsar la sección ya abierta la cierra: es una de las tres salidas que hay
+      // (esta, pulsar fuera de la esfera y el raíl).
+      this.select(this.lattice.selected === hit.itemId ? null : hit.itemId);
       return;
     }
     const item = this.items.find((i) => i.id === hit.itemId);

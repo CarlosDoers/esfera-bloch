@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { fresnelMaterial, glowSprite, makeLabel } from './helpers';
+import { easeTo, fresnelMaterial, glowSprite, makeLabel } from './helpers';
 import { PALETTE } from '../palette';
 
 /**
@@ -9,21 +9,24 @@ import { PALETTE } from '../palette';
  * en texto, y el acento se reserva para el ecuador —que es lo que da sentido a la esfera—.
  */
 const STRUCTURE = PALETTE.line;
+const QUIET = PALETTE.quiet;
 const ACCENT = PALETTE.accent;
 const TEXT = PALETTE.text;
 const REST_DIM = 0.16; // intensidad que conserva la esfera con una sección enfocada
 /**
- * Entrada por fases. Primero se dibuja el armazón de la esfera —cristal, rejilla,
- * ecuador—, después la retícula del chip la va cubriendo (eso lo lleva `QubitLattice`)
- * y al final llegan la hélice y el vector de estado, que son los que dan vida. Cada
- * elemento guarda el segundo en que empieza a aparecer.
+ * Entrada por fases: primero el armazón de la esfera —cristal, rejilla, ecuador—,
+ * después la retícula del chip la va cubriendo (eso lo lleva `QubitLattice`) y al final
+ * los estados base. La hélice y la flecha ya no entran aquí: aparecen al abrir una
+ * sección, así que en reposo la esfera se queda quieta. Cada elemento guarda el segundo
+ * en que empieza a aparecer.
  */
 const REVEAL_SPAN = 0.7; // lo que tarda cada elemento en entrar
 const AT_SHELL = 0.15;
 const AT_EQUATOR = 0.35;
 const AT_HELIX = 2.7;
-const AT_VECTOR = 3;
-const AT_KETS = 3.15;
+const AT_KETS = 3;
+
+const UP = new THREE.Vector3(0, 1, 0);
 
 type Fadeable = THREE.Material & { opacity: number };
 
@@ -41,7 +44,12 @@ export class BlochSphere {
   private readonly runnerGlow: THREE.Sprite;
   private readonly vector: THREE.Group;
   private readonly equatorMat: THREE.MeshBasicMaterial;
-  private readonly coreGlow: THREE.Sprite;
+  private readonly vectorMats: THREE.MeshBasicMaterial[] = [];
+  /** Hélice y fotón: 0 en reposo, 1 con una sección abierta. */
+  private active = 0;
+  /** Flecha: 0 oculta, 1 apuntando. Solo sube al señalar una subsección. */
+  private aiming = 0;
+  private readonly aim = new THREE.Vector3(0, 1, 0);
 
   constructor() {
     this.rimMat = this.buildShell();
@@ -52,35 +60,55 @@ export class BlochSphere {
     this.runner = this.buildRunner();
     this.runnerGlow = this.runner.children[0] as THREE.Sprite;
     this.vector = this.buildStateVector();
-    this.coreGlow = glowSprite('rgba(79,208,238,1)', 1.1, 0.12);
-    this.group.add(this.coreGlow);
   }
 
-  /** `focus` va de 0 (nada seleccionado) a 1 (sección enfocada: la esfera se atenúa). */
+  /**
+   * `focus` va de 0 (nada seleccionado) a 1 (sección enfocada: la esfera se atenúa).
+   *
+   * La hélice y su fotón **solo existen con una sección abierta**, y la flecha solo
+   * cuando además se señala una subsección: en reposo la esfera está quieta y no
+   * compite con nada.
+   */
   update(dt: number, focus: number): void {
     this.time += dt;
     this.dim = 1 - (1 - REST_DIM) * focus;
+    this.active = easeTo(this.active, focus > 0.5 ? 1 : 0, dt, 3.5);
 
-    // Fotón recorriendo la hélice.
+    // Fotón recorriendo la hélice, solo con una sección abierta.
     const t = (this.time * 0.07) % 1;
     this.runner.position.copy(this.helix.getPointAt(t));
-    this.runnerGlow.material.opacity = (0.6 + 0.4 * Math.sin(this.time * 9)) * this.dim * this.reveal(AT_HELIX);
+    this.runner.visible = this.active > 0.02;
+    this.runnerGlow.material.opacity = (0.5 + 0.3 * Math.sin(this.time * 9)) * this.active;
 
-    // Precesión de Larmor del vector de estado alrededor de Z.
-    this.vector.rotation.y = this.time * 0.5;
+    // La flecha apunta a la subsección señalada y se desvanece al soltarla.
+    this.vector.visible = this.aiming > 0.02;
+    if (this.vector.visible) {
+      this.vector.quaternion.setFromUnitVectors(UP, this.aim);
+      this.vector.scale.setScalar(this.aiming);
+      for (const m of this.vectorMats) m.opacity = this.aiming;
+    }
 
-    // Respiración sutil del ecuador y del núcleo.
     this.equatorMat.opacity = 0.5 * this.dim * this.reveal(AT_EQUATOR); // sin respiración: no todo tiene que latir
-    this.coreGlow.material.opacity = 0.12 * this.dim * this.reveal(AT_VECTOR);
 
-    // El vector de estado no aparece: crece desde el centro cuando le toca.
-    this.vector.scale.setScalar(this.reveal(AT_VECTOR));
-
-    // Todo lo demás baja de intensidad de forma proporcional.
-    for (const { mat, base, at } of this.fades) mat.opacity = base * this.dim * this.reveal(at);
+    // Todo lo demás baja de intensidad de forma proporcional... salvo la hélice y su
+    // fotón, que van atados a `active` y **no** a `dim`: pertenecen al estado abierto, así
+    // que atenuarlos porque hay algo abierto sería justo al revés. Antes se llevaban las
+    // dos penalizaciones a la vez —color de línea y `dim` al 16 %— y no se veían.
+    for (const { mat, base, at } of this.fades) {
+      mat.opacity = at === AT_HELIX ? base * this.active : base * this.dim * this.reveal(at);
+    }
     this.rimMat.uniforms.uIntensity.value = 0.35 * this.dim * this.reveal(AT_SHELL);
     const kets = String(this.dim * this.reveal(AT_KETS));
     for (const el of this.ketLabels) el.style.opacity = kets;
+  }
+
+  /**
+   * Dirección (local, normalizada) a la que apunta la flecha, o `null` para retirarla.
+   * La llama `App` con la subsección que tenga el puntero encima.
+   */
+  setAim(dir: THREE.Vector3 | null): void {
+    if (dir) this.aim.copy(dir).normalize();
+    this.aiming = dir ? Math.min(1, this.aiming + 0.18) : Math.max(0, this.aiming - 0.12);
   }
 
   // ---------- construcción ----------
@@ -180,7 +208,9 @@ export class BlochSphere {
     const curve = new THREE.CatmullRomCurve3(pts);
     const tube = new THREE.Mesh(
       new THREE.TubeGeometry(curve, 500, 0.011, 8, false),
-      this.fade(new THREE.MeshBasicMaterial({ color: STRUCTURE, transparent: true, opacity: 0.9 }), 0.9, AT_HELIX),
+      // No va en color de línea como el resto del armazón: la hélice ya no es fondo,
+      // es el camino que recorre el fotón y solo se ve con una sección abierta.
+      this.fade(new THREE.MeshBasicMaterial({ color: QUIET, transparent: true, opacity: 0.95 }), 0.95, AT_HELIX),
     );
     this.group.add(tube);
     return curve;
@@ -196,45 +226,29 @@ export class BlochSphere {
     return runner;
   }
 
+  /**
+   * El vector de estado, montado a lo largo de +Y para poder orientarlo a cualquier
+   * dirección con un solo cuaternión. Antes iba con una inclinación fija y sus
+   * proyecciones punteadas al plano ecuatorial; ahora es un puntero, así que las
+   * proyecciones sobraban.
+   */
   private buildStateVector(): THREE.Group {
     const vector = new THREE.Group();
-    const theta = 0.85; // ángulo polar del estado
-    const arm = new THREE.Group();
-    arm.rotation.z = -theta;
+    const mat = new THREE.MeshBasicMaterial({ color: TEXT, transparent: true, opacity: 0 });
+    this.vectorMats.push(mat);
 
-    const mat = this.fade(new THREE.MeshBasicMaterial({ color: 0xffffff }), 1, AT_VECTOR);
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.92, 8), mat);
-    shaft.position.y = 0.46;
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 12), mat);
-    tip.position.y = 0.955;
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.03, 16, 16),
-      this.fade(new THREE.MeshBasicMaterial({ color: ACCENT }), 1, AT_VECTOR),
-    );
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.9, 8), mat);
+    shaft.position.y = 0.45;
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.032, 0.1, 14), mat);
+    tip.position.y = 0.95;
+
+    const headMat = new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0 });
+    this.vectorMats.push(headMat);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.028, 16, 16), headMat);
     head.position.y = 1;
-    const headGlow = glowSprite('rgba(79,208,238,1)', 0.34, 0.55);
-    this.fade(headGlow.material, 0.9, AT_VECTOR);
-    head.add(headGlow);
-    arm.add(shaft, tip, head);
-    vector.add(arm);
 
-    // Proyecciones punteadas: punta → plano ecuatorial → centro
-    const px = Math.sin(theta);
-    const py = Math.cos(theta);
-    const dashMat = this.fade(
-      new THREE.LineDashedMaterial({ color: STRUCTURE, dashSize: 0.045, gapSize: 0.03, transparent: true, opacity: 0.9 }),
-      0.7,
-      AT_VECTOR,
-    );
-    for (const [a, b] of [
-      [new THREE.Vector3(px, py, 0), new THREE.Vector3(px, 0, 0)],
-      [new THREE.Vector3(0, 0, 0), new THREE.Vector3(px, 0, 0)],
-    ]) {
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), dashMat);
-      line.computeLineDistances();
-      vector.add(line);
-    }
-
+    vector.add(shaft, tip, head);
+    vector.visible = false;
     this.group.add(vector);
     return vector;
   }

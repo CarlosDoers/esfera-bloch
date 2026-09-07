@@ -13,7 +13,7 @@ export type HitInfo =
 const RADIUS = 1.02; // radio sobre el que se apoyan los cúbits
 const BASE_SIZE = 0.016;
 const HUB_SIZE = 0.05;
-const SUB_SIZE = 0.046;
+const SUB_SIZE = 0.068; // algo más grandes: son el objetivo de la interacción
 const SUB_ANGLE = 1.15; // separación angular respecto al eje de vista (rad)
 const SUB_CLEARANCE = 0.2; // aire entre la silueta de la esfera y la corona, en radios
 /**
@@ -54,13 +54,14 @@ const BOOT_DROP = 0.3; // desde cuánto más lejos del centro llega, en radios
 const POLE_GAP = 0.42; // radianes libres en cada polo, para |0⟩ y |1⟩
 const REST_DIM = 0.16; // intensidad que conserva lo no seleccionado
 const BASE_COLOR = new THREE.Color(PALETTE.quiet); // el cúbit en reposo no emite luz
+const MESH_DIM = 0.75; // la malla es el fondo sobre el que pasan las cosas, no el asunto
 const ACCENT = new THREE.Color(PALETTE.accent); // la sección seleccionada y sus subsecciones
 const TEXT = new THREE.Color(PALETTE.text); // las subsecciones: claras, pero sin robarle el acento a la sección
 const UP = new THREE.Vector3(0, 1, 0);
 const FORWARD = new THREE.Vector3(0, 0, 1);
 const LABEL_DROP = new THREE.Vector3(0, -0.14, 0);
-const SUB_LABEL_BELOW = -0.12; // separacion vertical de la etiqueta bajo su cubit
-const SUB_LABEL_ABOVE = 0.15; // ...y por encima, alternando para que no se pisen
+/** El título va **siempre encima** de su esfera; de que no se pisen se ocupa `separateLabels`. */
+const SUB_LABEL_ABOVE = 0.17;
 
 interface Qubit {
   pos: THREE.Vector3; // hueco en la esfera
@@ -97,6 +98,8 @@ interface Hub {
   label: CSS2DObject;
   scale: number;
   active: number;
+  /** 0 = a la vista, 1 = retirada porque hay otra sección abierta. */
+  away: number;
   subs: SubNode[];
 }
 
@@ -198,9 +201,19 @@ export class QubitLattice {
     return hub ? this.qubits[hub.index].pos : null;
   }
 
+  /** Dirección local de una subsección desplegada, para que la flecha la apunte. */
+  subDirection(itemId: string, subId: string): THREE.Vector3 | null {
+    const s = this.hubs.find((h) => h.item.id === itemId)?.subs.find((x) => x.sub.id === subId);
+    return s ? s.lifted : null;
+  }
+
   hitTargets(): THREE.Object3D[] {
     const sel = this.hubs.find((h) => h.item.id === this.selectedId);
-    return [...this.hubs.map((h) => h.hit), ...(sel?.subs.map((s) => s.hit) ?? []), this.hitMesh];
+    return [
+      ...this.hubs.filter((h) => h.away < 0.5).map((h) => h.hit),
+      ...(sel?.subs.map((s) => s.hit) ?? []),
+      this.hitMesh,
+    ];
   }
 
   resolveHit(hit: THREE.Intersection): HitInfo | null {
@@ -255,23 +268,35 @@ export class QubitLattice {
     // Estado por defecto de la retícula; las secciones lo sobrescriben abajo.
     for (const q of this.qubits) {
       q.targetScale = BASE_SIZE;
-      q.targetColor.copy(BASE_COLOR).multiplyScalar(rest);
+      q.targetColor.copy(BASE_COLOR).multiplyScalar(MESH_DIM * rest);
     }
 
     for (const hub of this.hubs) {
       const isSel = hub.item.id === this.selectedId;
       const isHover = this.hovered?.kind === 'item' && this.hovered.itemId === hub.item.id;
       const boot = this.bootOf(hub.index);
+      const hubPos = this.qubits[hub.index].pos;
+      // Un marcador en la cara oculta se ve a través del cristal igual de encendido que
+      // uno de frente, y eso es ruido: no puedes pulsarlo y compite con los de delante.
+      // Se atenúa según encare o no a la cámara.
+      const facing = THREE.MathUtils.smoothstep(
+        this.tmp.copy(this.camLocal).sub(hubPos).normalize().dot(hubPos) / hubPos.length(),
+        -0.1,
+        0.45,
+      );
       // Si los cinco marcadores brillan a la vez, ninguno destaca. En reposo son un punto
       // apagado; el brillo se lo gana el que está elegido, y algo menos el señalado.
-      const attention = isSel ? 1 : isHover ? 0.6 : 0.18;
+      const attention = (isSel ? 1 : isHover ? 0.6 : 0.18) * (0.12 + 0.88 * facing);
       const k = attention * (isSel ? 1 : rest);
-      const hubPos = this.qubits[hub.index].pos;
 
       hub.scale = easeTo(hub.scale, isSel ? 1.3 : isHover ? 1.2 : 1, dt, 8);
       hub.active = easeTo(hub.active, isSel ? 1 : 0, dt, 5);
-      hub.group.visible = boot > 0.01;
-      hub.group.scale.setScalar(hub.scale * boot);
+      // Al abrir una sección, las hermanas **desaparecen**, no se atenúan: atenuadas
+      // seguían siendo ruido. Se vuelven a ver cerrando (misma sección, fuera de la
+      // esfera o el raíl).
+      hub.away = easeTo(hub.away, this.selectedId !== null && !isSel ? 1 : 0, dt, 6);
+      hub.group.visible = boot > 0.01 && hub.away < 0.98;
+      hub.group.scale.setScalar(hub.scale * boot * (1 - hub.away));
       hub.ringMats[0].opacity = 0.8 * k;
       hub.ringMats[1].opacity = 0.25 * k;
       // El halo va al cuadrado: en reposo desaparece del todo en vez de quedarse tenue.
@@ -279,8 +304,9 @@ export class QubitLattice {
       this.qubits[hub.index].targetScale = HUB_SIZE * hub.scale;
       this.qubits[hub.index].targetColor
         .copy(hub.color)
-        .multiplyScalar((0.3 + 0.7 * attention) * (isSel ? 1 : rest));
-      this.faceLabel(hub.label, hubPos, boot > 0.5);
+        .multiplyScalar((0.3 + 0.7 * attention) * (isSel ? 1 : rest) * (1 - hub.away));
+      if (hub.away > 0.5) this.qubits[hub.index].targetScale = BASE_SIZE;
+      this.faceLabel(hub.label, hubPos, boot > 0.5 && hub.away < 0.5);
 
       // Marco tangente al eje de la cámara: `tanV` apunta hacia arriba en pantalla y
       // `tanU` hacia la derecha. Se toma el eje de vista y no el del cúbit de la sección
@@ -293,11 +319,11 @@ export class QubitLattice {
       this.tanV.normalize();
       this.tanU.crossVectors(this.tanV, this.nrm);
 
-      hub.subs.forEach((s, j) => {
+      for (const s of hub.subs) {
         const q = this.qubits[s.index];
         const a = hub.active;
         q.targetScale = BASE_SIZE + (SUB_SIZE - BASE_SIZE) * a;
-        q.targetColor.copy(BASE_COLOR).multiplyScalar(rest).lerp(TEXT, a);
+        q.targetColor.copy(BASE_COLOR).multiplyScalar(MESH_DIM * rest).lerp(TEXT, a);
 
         // Sitio de destino: corona sobre el cúbit de la sección, de izquierda a derecha
         // en el mismo orden que el panel. El cúbit viaja hasta ahí desde su hueco real.
@@ -315,11 +341,9 @@ export class QubitLattice {
         s.hit.position.copy(s.lifted);
         s.hit.visible = isSel;
 
-        // En una corona las etiquetas centrales quedan casi a la misma altura y se
-        // pisan entre si, asi que se alternan por encima y por debajo de su cubit.
-        s.label.position.copy(s.lifted).addScaledVector(UP, j % 2 ? SUB_LABEL_ABOVE : SUB_LABEL_BELOW);
+        s.label.position.copy(s.lifted).addScaledVector(UP, SUB_LABEL_ABOVE);
         this.faceLabel(s.label, s.lifted, isSel && a > 0.6);
-      });
+      }
       if (isSel) this.separateLabels(hub, dt);
     }
 
@@ -469,7 +493,7 @@ export class QubitLattice {
         return { sub, index: idx, hit: shit, label: slabel, ang, dy: 0, lifted: this.qubits[idx].pos.clone() };
       });
 
-      this.hubs.push({ item, index, color, group, ringMats, glow, hit, label, scale: 1, active: 0, subs });
+      this.hubs.push({ item, index, color, group, ringMats, glow, hit, label, scale: 1, active: 0, away: 0, subs });
     });
   }
 
