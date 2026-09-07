@@ -11,10 +11,24 @@ Entre la última columna y la primera queda una costura sin acoplador: la retíc
 chip es abierta y aquí se ve tal cual.
 
 Las secciones del menú son cúbits destacados; al pulsar uno, sus cúbits **acoplados**
-se despegan de la esfera y se colocan en una corona sobre la sección, de izquierda a
-derecha en el mismo orden que el panel; además se abre un panel lateral. No se dibuja
-ninguna línea entre la sección y sus subsecciones: lo que las agrupa es el color y la
-cercanía. Mientras hay una sección enfocada, el resto de la escena baja de
+se despegan de la esfera y se colocan en una corona **por fuera de su silueta**, de
+izquierda a derecha en el mismo orden que el panel; la esfera se corre a la izquierda
+para dejar sitio al panel. No se dibuja ninguna línea entre la sección y sus
+subsecciones ni anillos alrededor de ellas: lo que las agrupa es el color y la cercanía.
+
+El color de un territorio se **reescala** antes de usarlo en la escena 3D
+(`balanceGlow`). El bloom recorta por luminancia y el rosa y el morado la tienen mucho
+más baja que el cian, el verde o el ámbar —la luminancia la manda el canal verde—, así
+que con el mismo umbral florecían la tercera parte. Se sube su intensidad hasta
+igualarlos. El color de las etiquetas y del panel no se toca: ahí no interviene el bloom.
+
+La corona se construye alrededor del **eje de la cámara**, no del cúbit de la sección:
+`focusOn` solo iguala el azimut, así que una sección por debajo del ecuador queda hasta
+25° fuera de eje y su corona se descentraría justo de la silueta que hay que despejar.
+El despegue (`SUB_LIFT`) se deduce del ángulo y del aire que se quiere dejar
+(`SUB_CLEARANCE`) en vez de fijarse a ojo. En pantallas estrechas no hay sitio para eso:
+la corona vuelve a apoyarse sobre la esfera y las etiquetas 3D se ocultan, porque el
+panel ya lista las subsecciones a pantalla completa. Mientras hay una sección enfocada, el resto de la escena baja de
 intensidad para concentrar la atención. Nada orbita: la esfera gira para encarar la sección
 elegida.
 

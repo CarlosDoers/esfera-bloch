@@ -88,9 +88,11 @@ html, body {
   text-shadow: 0 0 8px var(--c);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+  /* Alineación hacia fuera de la esfera; la calcula QubitLattice según la corona. */
+  transform: translate(var(--dx, 0), var(--dy, 0px));
   transition: transform 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
-.sub-label.hover span { color: #fff; border-color: var(--c); transform: scale(1.08); }
+.sub-label.hover span { color: #fff; border-color: var(--c); transform: translate(var(--dx, 0), var(--dy, 0px)) scale(1.08); }
 
 .qubit-tip span {
   font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em;
@@ -217,4 +219,8 @@ html, body {
   .rail::-webkit-scrollbar { display: none; }
   .rail-item { padding: 8px 12px 8px 10px; }
   .rail-label { font-size: 10px; letter-spacing: 0.18em; }
+  /* Alrededor de una esfera que ocupa dos tercios del ancho no hay sitio para cuatro
+     chips: o pisan la esfera o se pisan entre ellos. En móvil el panel ya los lista a
+     pantalla completa, así que aquí las subsecciones solo se elevan, sin etiqueta. */
+  .sub-label { display: none; }
 }

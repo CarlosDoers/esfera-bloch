@@ -15,6 +15,10 @@ import { Starfield } from './Starfield';
 
 /** Altura del centro de la esfera sobre el suelo. */
 export const SPHERE_Y = 1.6;
+/** Cuánto se corre la esfera a la izquierda al enfocar, para dejar sitio al panel. */
+const FOCUS_SHIFT = 0.55;
+/** Por debajo de este ancho el panel se va abajo y la esfera necesita todo el sitio. */
+const NARROW_PX = 820;
 
 export class App {
   /** Se invoca al pulsar una subsección (cúbit 3D o botón del panel). */
@@ -162,6 +166,12 @@ export class App {
     }
 
     this.focus = easeTo(this.focus, this.lattice.selected ? 1 : 0, dt, 4);
+
+    // La esfera se aparta a la izquierda mientras hay panel abierto.
+    const camDir = this.tmpA.copy(this.camera.position).sub(this.center);
+    this.tmpB.set(camDir.z, 0, -camDir.x).normalize(); // derecha horizontal en pantalla
+    const shift = window.innerWidth < NARROW_PX ? 0 : FOCUS_SHIFT;
+    this.controls.target.copy(this.center).addScaledVector(this.tmpB, shift * this.focus);
 
     this.camera.getWorldPosition(this.camWorld);
     this.sphere.update(dt, this.focus);

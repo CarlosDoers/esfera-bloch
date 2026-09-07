@@ -13,14 +13,44 @@ const RADIUS = 1.02; // radio sobre el que se apoyan los cúbits
 const BASE_SIZE = 0.016;
 const HUB_SIZE = 0.05;
 const SUB_SIZE = 0.046;
-const SUB_LIFT = 0.45; // cuánto se despegan las subsecciones (fracción del radio)
-const SUB_ANGLE = 0.58; // separación angular respecto al cúbit de la sección (rad)
-const SUB_ARC_STEP = 0.8; // apertura de la corona por subsección (rad)
-const SUB_ARC_MAX = 2.4; // apertura máxima de la corona (rad)
+const SUB_ANGLE = 1.15; // separación angular respecto al eje de vista (rad)
+const SUB_CLEARANCE = 0.2; // aire entre la silueta de la esfera y la corona, en radios
+/**
+ * En pantallas estrechas no hay sitio: la esfera ya ocupa dos tercios del ancho y una
+ * corona por fuera echaría las etiquetas fuera del encuadre. Ahí se apoya por dentro,
+ * como antes, y el panel se va abajo de todas formas.
+ */
+const SUB_CLEARANCE_NARROW = -0.35;
+const NARROW_PX = 820;
+/**
+ * La corona cae sobre un cono a `SUB_ANGLE` del eje de la sección y, como la esfera gira
+ * para encarar la sección, ese eje apunta a la cámara: en pantalla las subsecciones caen
+ * sobre una circunferencia de radio `R·sen(SUB_ANGLE)` alrededor del centro de la esfera.
+ * Para que no se solapen con ella ese radio tiene que superar la silueta (radio 1), así
+ * que el despegue se **deduce** del ángulo y del aire que se quiere dejar, en vez de
+ * fijarse a ojo y tener que recalcularlo a mano si cambia cualquiera de los dos.
+ *
+ * El cálculo es ortográfico y la perspectiva agranda algo la corona, porque queda más
+ * cerca de la cámara que el centro de la esfera. Por eso `SUB_ANGLE` es grande: cuanto
+ * más se acerca a 90°, menos se adelanta la corona y menos desvía la perspectiva. El
+ * error restante va a favor —sobra aire, no falta—.
+ */
+const crownRadius = () =>
+  (1 + (window.innerWidth < NARROW_PX ? SUB_CLEARANCE_NARROW : SUB_CLEARANCE)) / Math.sin(SUB_ANGLE);
+const SUB_ARC_STEP = 0.7; // apertura de la corona por subsección (rad)
+const SUB_ARC_MAX = 2; // apertura máxima de la corona (rad)
 const BOOT_RATE = 60; // cúbits por segundo durante el arranque
 const POLE_GAP = 0.42; // radianes libres en cada polo, para |0⟩ y |1⟩
 const REST_DIM = 0.16; // intensidad que conserva lo no seleccionado
 const BASE_COLOR = new THREE.Color(0x8ff0ff);
+/**
+ * Luminancia objetivo para el color de un territorio en la escena 3D. El bloom recorta
+ * por luminancia, y el rosa y el morado la tienen mucho más baja que el cian, el verde
+ * o el ámbar —la luminancia la manda el canal verde—, así que con el mismo umbral
+ * brillaban la tercera parte. Se sube su intensidad hasta igualarlos; el color de la
+ * etiqueta y del panel no se toca, que ahí no interviene el bloom.
+ */
+const GLOW_LUMA = 0.8;
 const UP = new THREE.Vector3(0, 1, 0);
 const FORWARD = new THREE.Vector3(0, 0, 1);
 const LABEL_DROP = new THREE.Vector3(0, -0.14, 0);
@@ -41,9 +71,11 @@ interface SubNode {
   sub: SubItem;
   index: number;
   hit: THREE.Mesh;
-  ring: THREE.Mesh;
-  ringMat: THREE.MeshBasicMaterial;
   label: CSS2DObject;
+  /** Posición en la corona, 0 = arriba, negativo a la izquierda. */
+  ang: number;
+  /** Empujón vertical en pantalla para no pisar a otra etiqueta. */
+  dy: number;
   lifted: THREE.Vector3;
 }
 
@@ -180,6 +212,7 @@ export class QubitLattice {
     this.camLocal.copy(camWorld);
     this.group.worldToLocal(this.camLocal);
     const hoverIndex = this.hoverIndex();
+    const crownR = crownRadius();
 
     // Estado por defecto de la retícula; las secciones lo sobrescriben abajo.
     for (const q of this.qubits) {
@@ -205,17 +238,16 @@ export class QubitLattice {
       this.qubits[hub.index].targetColor.copy(hub.color).multiplyScalar(k);
       this.faceLabel(hub.label, hubPos, boot > 0.5);
 
-      // Marco tangente al cúbit de la sección: `tanV` apunta hacia arriba en pantalla
-      // y `tanU` hacia la derecha. Como la esfera gira para encarar la sección, la
-      // corona de subsecciones sale siempre bien orientada hacia la cámara.
-      this.nrm.copy(hubPos).normalize();
+      // Marco tangente al eje de la cámara: `tanV` apunta hacia arriba en pantalla y
+      // `tanU` hacia la derecha. Se toma el eje de vista y no el del cúbit de la sección
+      // porque `focusOn` solo iguala el azimut: una sección por debajo del ecuador queda
+      // hasta 25° fuera de eje y su corona se descentraría de la silueta de la esfera,
+      // que es justo lo que hay que evitar.
+      this.nrm.copy(this.camLocal).normalize();
       this.tanV.copy(UP).addScaledVector(this.nrm, -UP.dot(this.nrm));
       if (this.tanV.lengthSq() < 1e-6) this.tanV.copy(FORWARD); // sección justo en un polo
       this.tanV.normalize();
       this.tanU.crossVectors(this.tanV, this.nrm);
-
-      const n = hub.subs.length;
-      const arc = n > 1 ? Math.min(SUB_ARC_MAX, SUB_ARC_STEP * (n - 1)) : 0;
 
       hub.subs.forEach((s, j) => {
         const q = this.qubits[s.index];
@@ -227,30 +259,24 @@ export class QubitLattice {
         // en el mismo orden que el panel. El cúbit viaja hasta ahí desde su hueco real.
         // No se dibuja ninguna línea: lo que agrupa las subsecciones con su sección es
         // el color y la cercanía.
-        const ang = n > 1 ? -arc / 2 + (j / (n - 1)) * arc : 0;
         this.crown
           .copy(this.nrm)
           .multiplyScalar(Math.cos(SUB_ANGLE))
-          .addScaledVector(this.tanU, Math.sin(ang) * Math.sin(SUB_ANGLE))
-          .addScaledVector(this.tanV, Math.cos(ang) * Math.sin(SUB_ANGLE))
-          .multiplyScalar(RADIUS * (1 + SUB_LIFT));
+          .addScaledVector(this.tanU, Math.sin(s.ang) * Math.sin(SUB_ANGLE))
+          .addScaledVector(this.tanV, Math.cos(s.ang) * Math.sin(SUB_ANGLE))
+          .multiplyScalar(crownR);
         s.lifted.copy(q.pos).lerp(this.crown, a);
         q.drawPos.copy(s.lifted);
 
         s.hit.position.copy(s.lifted);
         s.hit.visible = isSel;
 
-        s.ring.position.copy(s.lifted);
-        s.ring.quaternion.setFromUnitVectors(FORWARD, this.tmp.copy(s.lifted).normalize());
-        s.ring.scale.setScalar(a);
-        s.ring.visible = a > 0.02;
-        s.ringMat.opacity = 0.9 * a;
-
         // En una corona las etiquetas centrales quedan casi a la misma altura y se
         // pisan entre si, asi que se alternan por encima y por debajo de su cubit.
         s.label.position.copy(s.lifted).addScaledVector(UP, j % 2 ? SUB_LABEL_ABOVE : SUB_LABEL_BELOW);
         this.faceLabel(s.label, s.lifted, isSel && a > 0.6);
       });
+      if (isSel) this.separateLabels(hub, dt);
     }
 
     this.qubits.forEach((q, i) => {
@@ -340,7 +366,7 @@ export class QubitLattice {
     items.forEach((item, k) => {
       const index = hubIndex[k];
       const q = this.qubits[index];
-      const color = new THREE.Color(item.color);
+      const color = balanceGlow(item.color);
       q.scale = q.targetScale = HUB_SIZE;
       q.color.copy(color);
       q.targetColor.copy(color);
@@ -356,7 +382,7 @@ export class QubitLattice {
       ];
       const ring = new THREE.Mesh(new THREE.TorusGeometry(0.095, 0.007, 8, 48), ringMats[0]);
       const ring2 = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.003, 6, 64), ringMats[1]);
-      const glow = glowSprite(toRgba(color), 0.55, 0.6);
+      const glow = glowSprite(toRgba(new THREE.Color(item.color)), 0.55, 0.6);
       const hit = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 8), invisible());
       hit.userData = { kind: 'item', itemId: item.id } satisfies HitInfo;
       group.add(ring, ring2, glow, hit);
@@ -367,22 +393,31 @@ export class QubitLattice {
 
       // Subsecciones: los cúbits acoplados al de la sección, por cercanía en el mapa
       // (saltos por los acopladores reales, no distancia en línea recta).
+      const n = item.items.length;
+      const arc = n > 1 ? Math.min(SUB_ARC_MAX, SUB_ARC_STEP * (n - 1)) : 0;
+
       const subs = bfsOrder(this.topology, index)
         .filter((i) => !used.has(i))
         .slice(0, item.items.length)
         .map((idx, k2) => {
         const sub = item.items[k2];
+        const ang = n > 1 ? -arc / 2 + (k2 / (n - 1)) * arc : 0;
         used.add(idx);
         const shit = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), invisible());
         shit.visible = false;
         shit.userData = { kind: 'sub', itemId: item.id, subId: sub.id } satisfies HitInfo;
-        const ringMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0 });
-        const sring = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.005, 8, 40), ringMat);
-        sring.visible = false;
         const slabel = makeLabel(sub.label, 'sub-label', item.color);
         slabel.visible = false;
-        this.group.add(shit, sring, slabel);
-        return { sub, index: idx, hit: shit, ring: sring, ringMat, label: slabel, lifted: this.qubits[idx].pos.clone() };
+        // Las etiquetas son anchas: centradas sobre su cúbit se meterían por encima de
+        // la esfera. Se alinean hacia fuera —la de la derecha crece a la derecha y la de
+        // la izquierda a la izquierda— con un porcentaje de su propio ancho, para que
+        // valga sea cual sea la longitud del texto.
+        (slabel.element.firstElementChild as HTMLElement).style.setProperty(
+          '--dx',
+          `${(Math.sin(ang) * 50).toFixed(0)}%`,
+        );
+        this.group.add(shit, slabel);
+        return { sub, index: idx, hit: shit, label: slabel, ang, dy: 0, lifted: this.qubits[idx].pos.clone() };
       });
 
       this.hubs.push({ item, index, color, group, ringMats, glow, hit, label, scale: 1, active: 0, subs });
@@ -405,6 +440,42 @@ export class QubitLattice {
   }
 
   // ---------- utilidades ----------
+
+  /**
+   * Red de seguridad: la corona reparte las etiquetas y la alternancia arriba/abajo las
+   * separa, pero eso depende del texto y del encuadre. Si dos llegan a pisarse se empuja
+   * la de arriba lo justo, suavizado. No se nota y garantiza que se lean aunque cambie
+   * el contenido del menú.
+   */
+  private separateLabels(hub: Hub, dt: number): void {
+    const GAP = 6;
+    const boxes = hub.subs
+      .filter((s) => s.label.visible)
+      .map((s) => {
+        const r = (s.label.element.firstElementChild as HTMLElement).getBoundingClientRect();
+        return { s, left: r.left, right: r.right, top: r.top - s.dy, height: r.height, target: 0 };
+      })
+      .filter((b) => b.height > 0)
+      .sort((a, b) => a.top - b.top);
+
+    // De abajo arriba: cada etiqueta empuja a las que tenga encima y se le monten.
+    for (let k = boxes.length - 1; k >= 0; k--) {
+      const lower = boxes[k];
+      const lowerTop = lower.top + lower.target;
+      for (let m = k - 1; m >= 0; m--) {
+        const upper = boxes[m];
+        if (upper.right < lower.left || upper.left > lower.right) continue;
+        const upperBottom = upper.top + upper.target + upper.height;
+        if (upperBottom + GAP > lowerTop) upper.target = lowerTop - GAP - upper.height - upper.top;
+      }
+    }
+
+    for (const s of hub.subs) {
+      const box = boxes.find((b) => b.s === s);
+      s.dy = easeTo(s.dy, box ? box.target : 0, dt, 12);
+      (s.label.element.firstElementChild as HTMLElement).style.setProperty('--dy', `${s.dy.toFixed(1)}px`);
+    }
+  }
 
   private bootOf(i: number): number {
     return THREE.MathUtils.smoothstep(this.time * BOOT_RATE - i, 0, 8);
@@ -440,6 +511,13 @@ function sameHit(a: HitInfo | null, b: HitInfo | null): boolean {
   if (a.kind === 'sub' && b.kind === 'sub') return a.itemId === b.itemId && a.subId === b.subId;
   if (a.kind === 'item' && b.kind === 'item') return a.itemId === b.itemId;
   return false;
+}
+
+/** Sube la intensidad de un color hasta `GLOW_LUMA` para que todos florezcan igual. */
+function balanceGlow(hex: string): THREE.Color {
+  const c = new THREE.Color(hex);
+  const luma = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  return c.multiplyScalar(Math.max(1, GLOW_LUMA / Math.max(luma, 1e-3)));
 }
 
 function toRgba(c: THREE.Color): string {
