@@ -16,21 +16,28 @@ izquierda a derecha en el mismo orden que el panel; la esfera se corre a la izqu
 para dejar sitio al panel. No se dibuja ninguna línea entre la sección y sus
 subsecciones ni anillos alrededor de ellas: lo que las agrupa es el color y la cercanía.
 
-El color de un territorio se **reescala** antes de usarlo en la escena 3D
-(`balanceGlow`). El bloom recorta por luminancia y el rosa y el morado la tienen mucho
-más baja que el cian, el verde o el ámbar —la luminancia la manda el canal verde—, así
-que con el mismo umbral florecían la tercera parte. Se sube su intensidad hasta
-igualarlos. El color de las etiquetas y del panel no se toca: ahí no interviene el bloom.
+Solo **señalar** una sección enciende ya sus subsecciones **donde están**, sin
+desplegarlas: es el adelanto de lo que hay dentro. Y no se encienden todas a la vez —eso
+se lee como un interruptor— sino que la luz sale de la sección y se propaga hacia fuera,
+con un sobre-brillo que se asienta al llegar a cada una.
+
+El turno de cada subsección son sus saltos por los acopladores reales, pero eso solo no
+basta: los cúbits acoplados a la sección están casi todos a **un** salto, así que ordenar
+por distancia los encendía a la vez y se perdía el gesto. Dentro de cada salto se abren
+además en abanico, en el mismo orden que ocupan en la corona, así que la luz barre de
+izquierda a derecha. El reloj se pone a cero al soltar, de modo que siempre vuelve a salir
+desde la sección; al abrir, las subsecciones ya vienen encendidas y lo único que añade el
+clic es el despliegue.
 
 La corona se construye alrededor del **eje de la cámara**, no del cúbit de la sección:
 `focusOn` solo iguala el azimut, así que una sección por debajo del ecuador queda hasta
 25° fuera de eje y su corona se descentraría justo de la silueta que hay que despejar.
-El despegue (`SUB_LIFT`) se deduce del ángulo y del aire que se quiere dejar
-(`SUB_CLEARANCE`) en vez de fijarse a ojo. En pantallas estrechas no hay sitio para eso:
-la corona vuelve a apoyarse sobre la esfera y las etiquetas 3D se ocultan, porque el
-panel ya lista las subsecciones a pantalla completa. Mientras hay una sección enfocada, el resto de la escena baja de
-intensidad para concentrar la atención. Nada orbita: la esfera gira para encarar la sección
-elegida.
+El despegue se deduce del ángulo y del aire que se quiere dejar (`SUB_CLEARANCE`) en vez
+de fijarse a ojo. En pantallas estrechas no hay sitio para eso: la corona vuelve a
+apoyarse sobre la esfera y las etiquetas 3D se ocultan, porque el panel ya lista las
+subsecciones a pantalla completa. Mientras hay una sección enfocada, el resto de la
+escena baja de intensidad para concentrar la atención. Nada orbita: la esfera gira para
+encarar la sección elegida.
 
 Como la esfera esconde la mitad de sus cúbits en la cara oculta, un **raíl** lateral mantiene
 las secciones siempre visibles y navegables con teclado; al pulsar una, la esfera gira hasta
@@ -96,6 +103,7 @@ npm run preview  # sirve dist/
 | Hover sobre una subsección | La flecha del estado apunta a esa opción |
 | Hover sobre el raíl | Resalta su cúbit en la escena, aunque esté en la cara oculta |
 | Clic en el raíl | Igual que pulsar la sección; una segunda pulsación cierra |
+| Hover sobre una sección | Sus subsecciones se encienden donde están, salto a salto: adelanto del subnivel sin abrirlo |
 | Clic en una sección | La esfera gira hacia ella, sus subsecciones se despegan hacia fuera formando una corona y se abre el panel. Todo lo demás baja de intensidad |
 | Clic en una subsección o botón del panel | Dispara `app.onNavigate(item, sub)` |
 | Clic en la sección abierta | La cierra y vuelven a verse las demás |

@@ -41,6 +41,24 @@ const crownRadius = () =>
 const SUB_ARC_STEP = 0.7; // apertura de la corona por subsección (rad)
 const SUB_ARC_MAX = 2; // apertura máxima de la corona (rad)
 /**
+ * Señalar una sección **enciende sus subsecciones donde están**, sin desplegarlas: es el
+ * adelanto de lo que hay dentro. No se encienden todas a la vez —eso se lee como un
+ * interruptor— sino que la luz sale de la sección y se propaga hacia fuera salto a salto,
+ * y cada cúbit se pasa un poco de brillo al llegarle y se asienta.
+ */
+const HOVER_PREVIEW = 0.7; // cuánto se encienden con solo señalar la sección
+const HOP_DELAY = 0.12; // retardo por turno
+/**
+ * Los cúbits acoplados a la sección están casi todos **a un salto**, así que ordenar el
+ * encendido solo por distancia los enciende a la vez y se pierde el gesto. Dentro de cada
+ * salto se abren además en abanico, en el mismo orden que ocupan en la corona, así que la
+ * luz sale de la sección y barre de izquierda a derecha.
+ */
+const FAN_DELAY = 0.45; // turnos que se lleva cada hermano del mismo salto
+const LIT_RISE = 0.18; // lo que tarda una subsección en encenderse
+const LIT_PULSE = 0.5; // sobre-brillo al llegarle la luz
+const LIT_SETTLE = 5.5; // con qué rapidez se asienta ese sobre-brillo
+/**
  * Entrada. En vez de encender los cúbits por orden de índice, un **anillo de luz baja
  * del polo |0⟩ al polo |1⟩** y va encendiendo las bandas de la retícula a su paso: como
  * las filas del chip son paralelos, el barrido por latitud recorre el procesador fila a
@@ -82,6 +100,8 @@ interface SubNode {
   label: CSS2DObject;
   /** Posición en la corona, 0 = arriba, negativo a la izquierda. */
   ang: number;
+  /** Turno de encendido: saltos desde la sección, y dentro de cada salto, abanico. */
+  turn: number;
   /** Empujón vertical en pantalla para no pisar a otra etiqueta. */
   dy: number;
   lifted: THREE.Vector3;
@@ -98,6 +118,8 @@ interface Hub {
   label: CSS2DObject;
   scale: number;
   active: number;
+  /** Segundos que lleva encendido el subnivel (señalado o abierto); 0 cuando está apagado. */
+  litT: number;
   /** 0 = a la vista, 1 = retirada porque hay otra sección abierta. */
   away: number;
   subs: SubNode[];
@@ -319,11 +341,25 @@ export class QubitLattice {
       this.tanV.normalize();
       this.tanU.crossVectors(this.tanV, this.nrm);
 
+      // Señalar la sección ya enciende sus subsecciones **donde están**; abrirla las
+      // despliega. El reloj corre mientras haya una de las dos cosas y se pone a cero al
+      // soltar, que es lo que hace que la luz vuelva a salir desde la sección.
+      const lighting = isSel || (isHover && this.selectedId === null);
+      hub.litT = lighting ? hub.litT + dt : 0;
+      const level = lighting ? (isSel ? 1 : HOVER_PREVIEW) : 0;
+
       for (const s of hub.subs) {
         const q = this.qubits[s.index];
         const a = hub.active;
-        q.targetScale = BASE_SIZE + (SUB_SIZE - BASE_SIZE) * a;
-        q.targetColor.copy(BASE_COLOR).multiplyScalar(MESH_DIM * rest).lerp(TEXT, a);
+        // Encendido: el despliegue va con `active` pero la luz va con el reloj, así que
+        // al señalar se encienden sin moverse y al abrir ya vienen encendidas.
+        const lit = level > 0 ? level * this.arrival(hub.litT, s.turn) : 0;
+        q.targetScale = BASE_SIZE + (SUB_SIZE - BASE_SIZE) * Math.max(a, Math.min(1, lit));
+        q.targetColor
+          .copy(BASE_COLOR)
+          .multiplyScalar(MESH_DIM * rest)
+          .lerp(TEXT, Math.max(a, Math.min(1, lit)))
+          .multiplyScalar(1 + 0.35 * Math.max(0, lit - 1));
 
         // Sitio de destino: corona sobre el cúbit de la sección, de izquierda a derecha
         // en el mismo orden que el panel. El cúbit viaja hasta ahí desde su hueco real.
@@ -468,14 +504,18 @@ export class QubitLattice {
       // (saltos por los acopladores reales, no distancia en línea recta).
       const n = item.items.length;
       const arc = n > 1 ? Math.min(SUB_ARC_MAX, SUB_ARC_STEP * (n - 1)) : 0;
+      const order = bfsOrder(this.topology, index).filter((i) => !used.has(i));
+      const hops = bfsDistanceMap(this.topology, index);
+      let prevHop = -1;
+      let within = 0;
 
-      const subs = bfsOrder(this.topology, index)
-        .filter((i) => !used.has(i))
-        .slice(0, item.items.length)
-        .map((idx, k2) => {
+      const subs = order.slice(0, item.items.length).map((idx, k2) => {
         const sub = item.items[k2];
         const ang = n > 1 ? -arc / 2 + (k2 / (n - 1)) * arc : 0;
         used.add(idx);
+        const hop = Math.max(1, hops[idx]);
+        within = hop === prevHop ? within + 1 : 0;
+        prevHop = hop;
         const shit = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), invisible());
         shit.visible = false;
         shit.userData = { kind: 'sub', itemId: item.id, subId: sub.id } satisfies HitInfo;
@@ -490,10 +530,19 @@ export class QubitLattice {
           `${(Math.sin(ang) * 50).toFixed(0)}%`,
         );
         this.group.add(shit, slabel);
-        return { sub, index: idx, hit: shit, label: slabel, ang, dy: 0, lifted: this.qubits[idx].pos.clone() };
+        return {
+          sub,
+          index: idx,
+          hit: shit,
+          label: slabel,
+          ang,
+          turn: hop - 1 + within * FAN_DELAY,
+          dy: 0,
+          lifted: this.qubits[idx].pos.clone(),
+        };
       });
 
-      this.hubs.push({ item, index, color, group, ringMats, glow, hit, label, scale: 1, active: 0, away: 0, subs });
+      this.hubs.push({ item, index, color, group, ringMats, glow, hit, label, scale: 1, active: 0, litT: 0, away: 0, subs });
     });
   }
 
@@ -513,6 +562,18 @@ export class QubitLattice {
   }
 
   // ---------- utilidades ----------
+
+  /**
+   * Brillo de una subsección al llegarle la luz: sube y se pasa un poco antes de
+   * asentarse. Es lo que hace que el encendido parezca que viene de la sección en vez de
+   * que alguien haya subido un regulador.
+   */
+  private arrival(litT: number, turn: number): number {
+    const u = litT - turn * HOP_DELAY;
+    if (u <= 0) return 0;
+    const rise = THREE.MathUtils.smoothstep(u / LIT_RISE, 0, 1);
+    return rise * (1 + LIT_PULSE * Math.exp(-Math.max(0, u - LIT_RISE) * LIT_SETTLE));
+  }
 
   /**
    * Red de seguridad: la corona reparte las etiquetas y la alternancia arriba/abajo las
@@ -593,6 +654,23 @@ export class QubitLattice {
     if (hit.kind === 'item') hub.label.element.classList.toggle('hover', on);
     else hub.subs.find((s) => s.sub.id === hit.subId)?.label.element.classList.toggle('hover', on);
   }
+}
+
+/** Saltos por acopladores desde `source` a cada cúbit, en un array indexado por cúbit. */
+function bfsDistanceMap(topology: Topology, source: number): Int16Array {
+  const dist = new Int16Array(topology.nodes.length).fill(-1);
+  const queue = [source];
+  dist[source] = 0;
+  for (let head = 0; head < queue.length; head++) {
+    const i = queue[head];
+    for (const j of topology.neighbours[i]) {
+      if (dist[j] === -1) {
+        dist[j] = dist[i] + 1;
+        queue.push(j);
+      }
+    }
+  }
+  return dist;
 }
 
 /** Suavizado con rebote: el cúbit se pasa un poco de su sitio y vuelve. */
